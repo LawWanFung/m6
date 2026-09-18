@@ -87,32 +87,38 @@ async def index() -> HTMLResponse:
     return HTMLResponse(html)
 
 
-def _load_df() -> dict:
-    import pandas as pd
+def _load_df() -> pd.DataFrame:
     import analyze.frequency as freqmod
-    from model.predict import model_run
 
-    df = pd.read_csv(BASE / "data/records.csv")
-    return {"analysis": freqmod.run(df), "model": model_run(df, 10)}
+    return freqmod.load()
+
+
+def _load_analysis() -> dict:
+    import analyze.frequency as freqmod
+
+    return freqmod.run(_load_df())
+
+
+def _load_model(lookback: int = 10) -> dict:
+    from model.predict import run as model_run
+
+    return model_run(_load_df(), lookback)
 
 
 @app.get("/api/analysis")
 async def api_analysis() -> dict:
-    return _load_df()["analysis"]
+    return _load_analysis()
 
 
 @app.get("/api/model")
 async def api_model() -> dict:
-    return _load_df()["model"]
+    return _load_model(10)
 
 
 @app.get("/api/run")
 @app.post("/api/run")
 async def api_run(lookback: int = Query(10, ge=1, le=60)) -> dict:
-    df = _load_df()
-    analysis = freqmod.run(df)
-    model = model_run(df, lookback)
-    return {"analysis": analysis, "model": model}
+    return {"analysis": _load_analysis(), "model": _load_model(lookback)}
 
 
 @app.post("/api/fetch")
