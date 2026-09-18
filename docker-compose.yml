@@ -1,0 +1,26 @@
+# Dokploy docker-compose 部署檔案
+#
+# Dokploy 會讀取此檔案嘅每個 service，並把對應嘅域名路由到
+#   http://<service-name>:<PORT>
+# 所以 service 名（mark6）同 PORT 環境變數好關鍵。
+#
+# 部署步驟（Dokploy UI）：
+#   1. 新增 Deployment → 類型選 "docker-compose"
+#   2. 指定本檔案所在目錄（通常即 repo root）
+#   3. 為 mark6 這個 service 指定域名
+#   4. Dokploy 會把該域名路由到 mark6:${PORT}
+
+services:
+  mark6:
+    # 用本目錄嘅 Dockerfile 建 image
+    build: .
+    container_name: mark6
+    restart: unless-stopped
+
+    # Dokploy 靠 PORT 知道流量要轉發到邊個端口
+    environment:
+      - PORT=${PORT:-8000}
+
+    # 方便除錯（Dokploy 實際用域名路由，未必用得到）
+    ports:
+      - "${PORT:-8000}:8000"

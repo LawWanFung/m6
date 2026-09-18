@@ -30,5 +30,6 @@ model/results/*.json
 *.swp
 
 # Env
-.env
-.env.*
+# 部署用：Dokploy docker-compose 靠佢做 PORT 變數替換（僅含 PORT，無機密）
+# .env
+# .env.*

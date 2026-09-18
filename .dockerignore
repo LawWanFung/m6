@@ -21,5 +21,4 @@ analyze/results/*.json
 .idea/
 .vscode/
 *.md
-Dockerfile
 .dockerignore

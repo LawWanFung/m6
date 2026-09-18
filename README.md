@@ -73,11 +73,25 @@ PORT=8000 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 > 例如 `PORT=8137 python -m uvicorn app.main:app --port 8137`。
 > Docker 內部獨立，`PORT=8000` 無問題。
 
-### 部署到 Dokploy（Docker 方式）
-1. Dokploy 新增 Web Service，選此 repo。
-2. Dockerfile 已設定：依賴自動安裝，監聽 `$PORT`（預設 8000）。
-3. Dokploy 會傳入 `PORT` 環境變數，`CMD` 會跟住它。
-4. 部署後打開分配的域名即可。
+### 部署到 Dokploy（docker-compose 方式）
+Dokploy 用 `docker-compose.yml` 部署，檔案如下：
+
+```yaml
+services:
+  mark6:
+    build: .
+    environment:
+      - PORT=${PORT:-8000}
+```
+
+部署步驟：
+1. Dokploy 新增 Deployment → 類型選 **docker-compose**
+2. 指定本檔案所在目錄（通常即 repo root）
+3. 為 `mark6` 這個 service 指定域名
+4. Dokploy 會把該域名路由到 `mark6:${PORT}`（預設 8000）
+
+> `docker-compose.yml` 同 `.env`（`PORT=8000`）一齊放 repo root，
+> docker-compose 會自動用 `.env` 做變數替換。
 
 ### 為什麼 `/` 直接返回 HTML 而非用 Jinja 伺服器端渲染？
 此環境的 Starlette 1.2.x 與 Jinja2 3.1.x 在模板快取上有版本相容問題，
