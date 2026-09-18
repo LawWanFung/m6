@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>六合彩數據儀表板 · Mark Six Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root { --bg:#0f1220; --card:#1a1f36; --accent:#5b8def; --good:#3ec979; --warn:#e6b54a; --bad:#e45b6b; --txt:#e6e8f0; --muted:#8b90a8; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--txt); }
+    header { padding:24px 28px; background:linear-gradient(90deg,#1a1f36,#232a4d); border-bottom:1px solid #2a3158; }
+    header h1 { margin:0; font-size:22px; }
+    header p { margin:6px 0 0; color:var(--muted); font-size:13px; }
+    main { max-width:1100px; margin:0 auto; padding:24px; }
+    .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:18px; flex-wrap:wrap; }
+    button { background:var(--accent); color:#fff; border:0; padding:9px 16px; border-radius:8px; cursor:pointer; font-size:14px; }
+    button:hover { opacity:.9; }
+    input[type=number] { padding:8px 10px; border-radius:8px; border:1px solid #2a3158; background:#12162b; color:var(--txt); width:80px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; margin-bottom:20px; }
+    .card { background:var(--card); border:1px solid #262c4d; border-radius:12px; padding:18px; }
+    .card h3 { margin:0 0 12px; font-size:14px; color:var(--muted); font-weight:600; }
+    .stat { font-size:30px; font-weight:700; }
+    .muted { color:var(--muted); font-size:12px; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    td, th { padding:5px 8px; text-align:left; border-bottom:1px solid #262c4d; }
+    .tag { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; }
+    .g { background:rgba(62,201,121,.15); color:var(--good); }
+    .w { background:rgba(230,181,74,.15); color:var(--warn); }
+    .chart-wrap { background:var(--card); border:1px solid #262c4d; border-radius:12px; padding:18px; margin-bottom:20px; }
+    .full { grid-column:1/-1; }
+    #status { color:var(--warn); font-size:13px; }
+    .nums { display:flex; flex-wrap:wrap; gap:6px; }
+    .chip { width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; background:#2a3158; }
+    .chip.hot { background:var(--good); color:#06210f; }
+    .chip.cold { background:var(--bad); color:#2a0810; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>🎲 六合彩數據儀表板</h1>
+  <p>統計分析 · 公平性檢驗 · 冷熱號 · 建模驗證（此工具僅供研究，無法預測開獎）</p>
+</header>
+<main>
+  <div class="toolbar">
+    <button id="runBtn">重新分析</button>
+    <label class="muted">滯後期數 lookback
+      <input id="lookback" type="number" value="10" min="1" max="60">
+    </label>
+    <span id="status"></span>
+  </div>
+
+  <div class="grid" id="stats"></div>
+
+  <div class="chart-wrap">
+    <h3>主號 1–49 出現頻率</h3>
+    <canvas id="freqChart" height="120"></canvas>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>熱號 / 冷號（主號）</h3>
+      <div><b class="g">熱號</b><div class="nums" id="hotNums"></div></div>
+      <p style="margin:10px 0 6px"><b class="w">冷號</b><div class="nums" id="coldNums"></div></div>
+    </div>
+    <div class="card">
+      <h3>建模驗證（能否超贏隨機？）</h3>
+      <div id="modelInfo" class="muted">載入中…</div>
+    </div>
+  </div>
+</main>
+
+<script>
+let freqChart = null;
+
+function fmt(v){ return (typeof v === 'object' && v !== null)
+  ? Object.entries(v).map(([k,val])=>`${k}: ${Math.round(val)}`).join(' · ') : v; }
+
+async function fetchData(lookback){
+  const url = lookback && lookback>0
+    ? `/api/run?lookback=${lookback}` : `/api/analysis`;
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return await r.json();
+}
+
+function render(analysis, model){
+  // stats cards
+  const stats = document.getElementById('stats');
+  const chi = analysis.main_chi2 || {};
+  const cc = chi.significant_05 === true || chi.significant_05 === 'True';
+  stats.innerHTML = `
+    <div class="card"><h3>數據期數</h3><div class="stat">${analysis.n_draws}</div></div>
+    <div class="card"><h3>主號公平性 (χ²)</h3>
+      <div class="stat">${chi.p_value!=null? chi.p_value.toFixed(3):'-'}</div>
+      <div class="muted">${cc?'⚠️ 分佈有偏差':'✅ 符合均勻分佈'}</div></div>
+    <div class="card"><h3>特別號公平性 (χ²)</h3>
+      <div class="stat">${analysis.extra_chi2.p_value!=null? analysis.extra_chi2.p_value.toFixed(3):'-'}</div>
+      <div class="muted">${(analysis.extra_chi2.significant_05==='True')?'⚠️ 有偏差':'✅ 均勻'}</div></div>
+    <div class="card"><h3>平均開獎總和</h3>
+      <div class="stat">${(analysis.descriptive||{}).sum_mean!=null? Math.round(analysis.descriptive.sum_mean):'-'}</div>
+      <div class="muted">標準差 ${(analysis.descriptive||{}).sum_std!=null? Math.round(analysis.descriptive.sum_std):'-'}</div></div>`;
+
+  // frequency chart
+  const freq = analysis.main_freq || {};
+  const labels = Array.from({length:49},(_,i)=>i+1);
+  const data = labels.map(l => freq[l] ?? 0);
+  if(freqChart) freqChart.destroy();
+  freqChart = new Chart(document.getElementById('freqChart'), {
+    type:'bar',
+    data:{ labels, datasets:[{
+      label:'出現次數', data,
+      backgroundColor: labels.map(l => (freq[l]??0) > (analysis.n_numbers? analysis.n_numbers/49 : 0) ? '#3ec979' : '#e45b6b')
+    }]},
+    options:{ responsive:true, plugins:{legend:{display:false}},
+      scales:{ x:{ticks:{color:'#8b90a8',maxRotation:90,minRotation:45}}, y:{ticks:{color:'#8b90a8'}}, } }
+  });
+
+  // cold/hot
+  const ch = analysis.cold_hot || {};
+  const hot = document.getElementById('hotNums');
+  const cold = document.getElementById('coldNums');
+  hot.innerHTML = Object.keys(ch.hot||{}).map(k=>`<span class="chip hot">${k}<sub style="opacity:.7">${ch.hot[k]}</sub></span>`).join('') || '<span class="muted">無資料</span>';
+  cold.innerHTML = Object.keys(ch.cold||{}).map(k=>`<span class="chip cold">${k}<sub style="opacity:.7">${ch.cold[k]}</sub></span>`).join('') || '<span class="muted">無資料</span>';
+
+  // model
+  const mi = document.getElementById('modelInfo');
+  if(model){
+    const ok = model.can_predict === true;
+    mi.innerHTML = `<div>樣本數：${model.n_samples}</div>
+      <div>模型 log-loss：<b>${(model.mean_log_loss).toFixed(3)}</b></div>
+      <div>均勻 baseline：${model.uniform_baseline_log_loss.toFixed(3)}</div>
+      <p style="margin-top:8px" class="${ok?'g':'w'}">${ok?'✅ 模型表現優於隨機（異常）':'❌ 模型輸給隨機 → 無法預測，符合預期'}</p>`;
+  }
+}
+
+async function run(){
+  const status = document.getElementById('status');
+  const lookback = document.getElementById('lookback').value;
+  status.textContent = '分析中…';
+  try {
+    const d = await fetchData(lookback);
+    render(d.analysis, d.model);
+    status.textContent = `✓ 完成 @ ${new Date().toLocaleTimeString()}`;
+  } catch(e){
+    status.textContent = '✗ 出錯：'+e.message;
+  }
+}
+
+document.getElementById('runBtn').addEventListener('click', run);
+document.getElementById('lookback').addEventListener('keydown', e=>{ if(e.key==='Enter') run(); });
+run();
+</script>
+</body>
+</html>

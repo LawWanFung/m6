@@ -82,7 +82,7 @@ def chi_square_uniform(freq: pd.Series, label: str, total: int):
         "dof": int(dof),
         "max_dev": float(np.max(np.abs(observed - expected))),
     }
-    res["significant_05"] = p < 0.05
+    res["significant_05"] = bool(p < 0.05)
     return res
 
 
@@ -120,8 +120,8 @@ def descriptive_stats(df: pd.DataFrame) -> dict:
     }
 
 
-def run(path: Path | None = None) -> dict:
-    df = load(path)
+def run(df: pd.DataFrame) -> dict:
+    """接收已載入的 DataFrame，執行分析並寫入 results/。"""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     freq = frequency_analysis(df)
@@ -136,6 +136,8 @@ def run(path: Path | None = None) -> dict:
         "extra_chi2": extra_chi,
         "cold_hot": {k: {int(k2): int(v) for k2, v in val.items()} for k, val in ch.items()},
         "descriptive": desc,
+        "main_freq": {int(k): int(v) for k, v in freq["main_freq"].items()},
+        "extra_freq": {int(k): int(v) for k, v in freq["extra_freq"].items()},
     }
     with (RESULTS_DIR / "analysis.json").open("w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2, default=str)
@@ -155,7 +157,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", help="指定 CSV 路徑")
     a = ap.parse_args()
-    run(Path(a.csv) if a.csv else None)
+    df = load(Path(a.csv) if a.csv else None)
+    run(df)
 
 
 if __name__ == "__main__":
