@@ -1,0 +1,42 @@
+{
+  "n_draws": 500,
+  "main_chi2": {
+    "label": "main_numbers",
+    "chi2": 40.090666666666664,
+    "p_value": 0.7844505845287583,
+    "dof": 48,
+    "max_dev": 15.224489795918366,
+    "significant_05": "False"
+  },
+  "extra_chi2": {
+    "label": "extra_ball",
+    "chi2": 51.544000000000004,
+    "p_value": 0.3369244559270163,
+    "dof": 48,
+    "max_dev": 7.795918367346939,
+    "significant_05": "False"
+  },
+  "cold_hot": {
+    "hot": {
+      "46": 76,
+      "23": 74,
+      "36": 74,
+      "4": 73,
+      "2": 72
+    },
+    "cold": {
+      "12": 46,
+      "9": 51,
+      "1": 51,
+      "35": 52,
+      "15": 52
+    }
+  },
+  "descriptive": {
+    "odd_even_mean": 3.016,
+    "big_small_mean": 3.088,
+    "consecutive_mean": 0.554,
+    "sum_mean": 150.32,
+    "sum_std": 33.44813298227571
+  }
+}

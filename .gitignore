@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Data
+data/raw/
+data/mark6_history.csv
+# 保留樣本檔供測試
+# !data/mark6_sample.csv
+
+# Model artifacts
+model/results/*.json
+!model/results/.gitkeep
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.*
