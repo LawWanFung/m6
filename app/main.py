@@ -63,6 +63,7 @@ async def api_model() -> dict:
     return model_run(df, lookback)
 
 
+@app.get("/api/run")
 @app.post("/api/run")
 async def api_run(lookback: int = Query(10, ge=1, le=60)) -> dict:
     df = _load_df()
