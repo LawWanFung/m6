@@ -51,18 +51,55 @@ def _load_seg(path: Path) -> list[dict]:
     return [normalize(r) for r in data if r.get("id")]
 
 
-def build_history() -> int:
-    """合併所有區間 JSON -> 主表 CSV（去重）。"""
-    if not RAW_DIR.exists():
-        print(f"[!] 找不到 {RAW_DIR}", file=sys.stderr)
-        return 0
+def _rec_from_csv_row(row: dict) -> dict:
+    """將主表 CSV 一行轉回記錄（numbers 字串 -> list[int]），供 merge 用。"""
+    rec = dict(row)
+    nums = row.get("numbers") or ""
+    rec["numbers"] = [int(v) for v in str(nums).split(",") if str(v).strip().isdigit()]
+    return rec
 
-    seen: dict[str, dict] = {}
-    for seg in sorted(RAW_DIR.glob("*.json")):
-        for rec in _load_seg(seg):
-            did = rec["draw_id"]
-            if did:
-                seen[did] = rec  # 相同 draw_id 以後來為準
+
+def _load_existing_csv() -> dict[str, dict]:
+    """讀現有主表（已入 repo 嘅真實歷史）。"""
+    out: dict[str, dict] = {}
+    if not HISTORY_CSV.exists():
+        return out
+    try:
+        with HISTORY_CSV.open(encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                did = row.get("draw_id")
+                if did:
+                    out[did] = _rec_from_csv_row(row)
+    except (OSError, ValueError) as e:
+        print(f"  [!] 讀取現有主表失敗（忽略）：{e}", file=sys.stderr)
+    return out
+
+
+def build_history(merge_existing: bool = True) -> int:
+    """合併「現有主表」+ 所有 raw JSON -> 主表 CSV（按 draw_id 去重）。
+
+    ⚠️ 重要：必需以現有主表為底再疊上 raw 快取。
+    因為 `data/raw/`（原始 JSON 快取）**唔入 repo**，如果單純用 raw 覆寫，
+    在一個只有主表、冇 raw 快取嘅環境（新 clone／Docker）執行就會
+    用少量甚至 1 筆資料**清空已累積嘅 4390 期歷史**。
+    """
+    seen: dict[str, dict] = _load_existing_csv() if merge_existing else {}
+    base_n = len(seen)
+
+    raw_n = 0
+    if RAW_DIR.exists():
+        for seg in sorted(RAW_DIR.glob("*.json")):
+            for rec in _load_seg(seg):
+                did = rec["draw_id"]
+                if did:
+                    seen[did] = rec  # raw 係最新抓取，同一 draw_id 以 raw 為準
+                    raw_n += 1
+    else:
+        print(f"  [i] 找不到 {RAW_DIR}（原始快取唔入 repo），只用現有主表。")
+
+    if not seen:
+        print("  [!] 冇任何資料可整合。請先執行 hkjc_fetch.py 抓取數據。", file=sys.stderr)
+        return 0
 
     rows = sorted(
         (r for r in seen.values() if r.get("date")),
@@ -81,7 +118,10 @@ def build_history() -> int:
         for r in rows:
             w.writerow(_row_for_csv(r))
 
-    print(f"已整合 {len(rows)} 筆 -> {HISTORY_CSV}")
+    print(
+        f"已整合 {len(rows)} 筆 -> {HISTORY_CSV}"
+        f"（現有主表 {base_n} 筆 + raw {raw_n} 筆，去重後 {len(rows)} 筆）"
+    )
     return len(rows)
 
 
