@@ -31,20 +31,54 @@ SAMPLE_CSV = BASE / "data" / "mark6_sample.csv"
 RESULTS_DIR = BASE / "analyze" / "results"
 
 
-def load(path: Path | None = None) -> pd.DataFrame:
-    target = path or CSV_PATH
-    if not target.exists():
-        if SAMPLE_CSV.exists():
+def load(path: Path | None = None, allow_sample: bool = False) -> pd.DataFrame:
+    """載入主表 CSV。
+
+    **預設只接受真實數據**（data/mark6_history.csv）：如果檔案不存在或為空，
+    直接拋 `FileNotFoundError`，**絕不會靜默改用合成樣本**。
+
+    只有明確傳 `allow_sample=True`（離線測試／CI）才會退回合成樣本，
+    此時 `df.attrs["data_source"] == "sample"` 可以被呼叫方檢查。
+    """
+    target = Path(path) if path else CSV_PATH
+    source = "real"
+
+    def _empty() -> bool:
+        try:
+            return not target.exists() or target.stat().st_size == 0
+        except OSError:
+            return True
+
+    if _empty():
+        if allow_sample and SAMPLE_CSV.exists():
+            print(f"[!] 找不到真實數據 {target}，已退回合成樣本 {SAMPLE_CSV.name}（僅供離線測試）")
             target = SAMPLE_CSV
+            source = "sample"
         else:
-            raise FileNotFoundError("無歷史數據，請先執行 src/gen_sample.py 生成樣本")
+            raise FileNotFoundError(
+                f"找不到真實歷史數據：{target}\n"
+                f"請先執行：\n"
+                f"  python src/hkjc_fetch.py --from 1993-01-01   # 抓完整歷史\n"
+                f"  python src/build_history.py --mode build     # 整合成主表"
+            )
+
     df = pd.read_csv(target, encoding="utf-8")
-    if len(df) == 0 and SAMPLE_CSV.exists():
-        target = SAMPLE_CSV
-        df = pd.read_csv(target, encoding="utf-8")
+    if len(df) == 0:
+        if allow_sample and SAMPLE_CSV.exists() and target != SAMPLE_CSV:
+            print(f"[!] 主表為空，已退回合成樣本 {SAMPLE_CSV.name}（僅供離線測試）")
+            target = SAMPLE_CSV
+            source = "sample"
+            df = pd.read_csv(target, encoding="utf-8")
+        else:
+            raise ValueError(f"數據檔為空：{target}")
+
     df["numbers"] = df["numbers"].apply(lambda x: [int(v) for v in str(x).split(",") if v.strip()])
     df["extra_ball"] = pd.to_numeric(df["extra_ball"], errors="coerce")
     df["date"] = pd.to_datetime(df["date"], format="%d/%m/%Y", errors="coerce")
+
+    # 記下來源，方便 API / UI 顯示（並確保 demo 數據唔會被當成真實數據）
+    df.attrs["data_source"] = source
+    df.attrs["data_path"] = str(target)
     return df
 
 
@@ -124,6 +158,11 @@ def run(df: pd.DataFrame) -> dict:
     """接收已載入的 DataFrame，執行分析並寫入 results/。"""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    source = df.attrs.get("data_source", "unknown")
+    path = df.attrs.get("data_path", "")
+    if source == "sample":
+        print("[!] 注意：今次分析用嘅係合成樣本，唔係真實 HKJC 數據！")
+
     freq = frequency_analysis(df)
     main_chi = chi_square_uniform(freq["main_freq"], "main_numbers", freq["n_numbers"])
     extra_chi = chi_square_uniform(freq["extra_freq"], "extra_ball", int(df["extra_ball"].dropna().count()))
@@ -132,6 +171,12 @@ def run(df: pd.DataFrame) -> dict:
 
     out = {
         "n_draws": int(len(df)),
+        "data_source": source,          # "real" = 真實 HKJC 數據；"sample" = 合成樣本
+        "data_path": path,
+        "date_range": {
+            "first": str(df["date"].min().date()) if df["date"].notna().any() else None,
+            "last": str(df["date"].max().date()) if df["date"].notna().any() else None,
+        },
         "main_chi2": main_chi,
         "extra_chi2": extra_chi,
         "cold_hot": {k: {int(k2): int(v) for k2, v in val.items()} for k, val in ch.items()},
@@ -143,7 +188,9 @@ def run(df: pd.DataFrame) -> dict:
         json.dump(out, f, ensure_ascii=False, indent=2, default=str)
 
     # 列印摘要
-    print(f"數據期數: {out['n_draws']}")
+    print(f"數據期數: {out['n_draws']}（來源: {source} · {path}）")
+    if out["date_range"]["first"]:
+        print(f"日期範圍: {out['date_range']['first']} ~ {out['date_range']['last']}")
     print(f"主號 卡方 p={main_chi['p_value']:.4f} (显著性0.05: {main_chi['significant_05']}) "
           f"最大偏差 {main_chi['max_dev']:.1f}")
     print(f"特別號 卡方 p={extra_chi['p_value']:.4f}")
@@ -156,8 +203,10 @@ def run(df: pd.DataFrame) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", help="指定 CSV 路徑")
+    ap.add_argument("--allow-sample", action="store_true",
+                    help="容許在無真實數據時退回合成樣本（只供離線測試）")
     a = ap.parse_args()
-    df = load(Path(a.csv) if a.csv else None)
+    df = load(Path(a.csv) if a.csv else None, allow_sample=a.allow_sample)
     run(df)
 
 

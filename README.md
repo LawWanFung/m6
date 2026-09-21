@@ -9,11 +9,11 @@
 ```
 mark6/
 ├── data/
-│   ├── mark6_history.csv      # 主表（真實數據整合後放這裡）
-│   ├── mark6_sample.csv       # 合成樣本（500 期，本地測試用）
-│   └── raw/                   # HKJC 原始 JSON（每 3 個月一檔）
+│   ├── mark6_history.csv      # ⭐ 真實歷史主表（1993-01-05 起 4390 期，已入 repo）
+│   ├── mark6_sample.csv       # 合成樣本（500 期，只供離線測試，App 唔會用）
+│   └── raw/                   # HKJC 原始 JSON 快取（不入 repo）：seg_*.json 分段、last_all.json 最新
 ├── src/
-│   ├── hkjc_fetch.py          # 抓取 HKJC 官方 JSON API（按 3 個月分段）
+│   ├── hkjc_fetch.py          # 抓取 HKJC 官方 GraphQL API（見 docs/hkjc_graphql_schema.md）
 │   ├── build_history.py       # 整合原始 JSON → 主表 CSV（去重、增量）
 │   └── gen_sample.py          # 生成合成樣本數據
 ├── analyze/
@@ -37,20 +37,43 @@ pip install -r requirements.txt
 python run_all.py
 ```
 
-### 2. 抓取真實歷史數據（需網絡可直連 HKJC）
-HKJC 官方 API：`http://bet.hkjc.com/marksix/getJSON.aspx?sd=YYYYMMDD&ed=YYYYMMDD&sb=0`
+### 2. 抓取真實數據（需網絡可直連 HKJC）
+HKJC 官方 API：`POST https://info.cld.hkjc.com/graphql/base/`（詳見 `docs/hkjc_graphql_schema.md`）
+
+> ⚠️ 兩種模式（實測，詳見 `docs/hkjc_graphql_schema.md`）：
+> * `lastNDraw`：最多 **58 期**（超過**靜默截斷**），且結果**唔連續**。
+> * 日期範圍（`YYYYMMDD`，窗口 **≤ 3 個月**）：**完整、連續**，可撈到 1993 年。
+>   超限係**靜默回空**，所以模組會自動二分縮窗重試。
+
+> 📦 **完整歷史（1993-01-05 起、4390 期）已經入 repo**：`data/mark6_history.csv`。
+> 所以 clone 完就即刻有真實數據，唔需要出網就跑到分析／儀表板。
+> `data/raw/`（GraphQL 原始回應快取）唔入 repo，可以隨時重新抓。
+
 ```bash
-# 抓取 1993 年至今全部歷史
-python src/hkjc_fetch.py --from 1993-01-01 --to 2025-12-31
-python src/build_history.py --mode build      # 整合成主表
+# 完整歷史（約 3.5 分鐘；分段寫入 data/raw/seg_*.json，可中斷續傳）
+python src/hkjc_fetch.py --from 1993-01-01
+
+# 抓最近 50 期（快，lastNDraw 模式）→ data/raw/last_all.json
+python src/hkjc_fetch.py --last-n 50
+
+# 整合成主表（讀光所有 raw JSON，按 draw_id 去重排序；可重覆執行）
+python src/build_history.py --mode build
 ```
 
-### 3. 增量更新（每期之後跑一次）
+### 3. 增量更新（每期開獎之後跑一次）
+
+`--since-last` 會**自動判斷「對上一次數據」係邊一日**（先讀 `data/mark6_history.csv`
+嘅最大日期，冇有就掃 `data/raw/*.json`），然後由該日一直抓到**今日**：
+
 ```bash
-python src/hkjc_fetch.py --latest
-python src/build_history.py --mode update
+python src/hkjc_fetch.py --since-last   # 上次數據 → 今日（寫入 last_all.json）
+python src/build_history.py --mode build # 去重後追加新期數
 python analyze/frequency.py
 ```
+
+- `--latest` 係 `--since-last` 嘅同義詞（Web App 按鈕就係跑這個）。
+- 完全冇舊數據（主表＋raw 都空）→ 自動改為由 1993 做完整抓取。
+- 想固定回溯日數可用 `--days 90`（會覆寫自動判斷）。
 
 ## Web App（FastAPI + Dokploy）
 
@@ -62,6 +85,36 @@ python analyze/frequency.py
 | `GET /api/analysis` | 統計分析 JSON |
 | `GET /api/model` | 建模結果 JSON |
 | `POST /api/run?lookback=N` | 重新執行分析 + 建模 |
+| `POST /api/fetch` | 背景抓取：由「上次數據日期」抓到今日，再整合成主表（回 `task_id` 輪詢） |
+| `GET /api/fetch_status?task_id=…` | 抓取進度（`fetching` / `success` / `error`） |
+| `GET /api/health` | 健康檢查 + **數據來源資訊**（期數、日期範圍） |
+
+### ⚠️ 數據來源保證（唔准用 demo 數據）
+
+分析／建模／儀表板**只會用真實 HKJC 數據** `data/mark6_history.csv`：
+
+- `analyze.frequency.load()` 預設 `allow_sample=False`：主表不存在或為空就直接報錯，
+  **唔會靜默退回合成樣本** `mark6_sample.csv`。
+- 只有明確傳 `allow_sample=True`（`run_all.py` 離線測試、CI）才會用合成樣本，
+  並且 `df.attrs["data_source"]` 會標記為 `"sample"`。
+- API 回應會帶 `data_source` / `date_range`，儀表板會顯示
+  `✅ 真實 HKJC 數據（1993-01-05 ~ 2026-09-19）`；若來源不是 `real`，
+  `/api/analysis` 直接回 **HTTP 503**，唔會顯示假數據。
+
+### lookback 係咩？
+
+`lookback`（滯後期數，預設 10）＝**餵給模型嘅歷史窗口大細**。
+建模時，每一期嘅特徵就係「對上 `lookback` 期、每個號碼（1–49）出現過幾多次」
+→ 一條 `lookback × 49` 維嘅向量，用 MLP 去預測當期 6 個號碼。
+
+| lookback | 效果 |
+| --- | --- |
+| 細（如 3） | 特徵少、訓練快，但只看近期，訊息量少 |
+| 大（如 60） | 特徵多（2940 維）、訓練慢，噪聲多、容易過擬合 |
+
+重點係：**無論點調 lookback，模型 log-loss（~8.07）都輸給均勻 baseline（ln 49 ≈ 3.89）**。
+即係話歷史頻率對預測下一期**零作用**——呢個正正係「六合彩係獨立隨機事件」嘅實證。
+所以 `lookback` 嘅用途係**示範同驗證「模型無用」**，唔係用嚟調到「有得贏」。
 
 ### 本地啟動
 ```bash
@@ -102,7 +155,7 @@ services:
 
 | 檔案 | 用途 |
 |------|------|
-| `src/hkjc_fetch.py` | 官方 API 抓取，每 3 個月分段遍歷，逐區間存 JSON，易斷點續傳 |
+| `src/hkjc_fetch.py` | 官方 GraphQL API 抓取：完整歷史（日期範圍分段）或增量 `--since-last`；`normalize()` 轉主表欄位 |
 | `src/build_history.py` | 合併所有 JSON → 主表 CSV（按 `draw_id` 去重），支援增量追加 |
 | `analyze/frequency.py` | 號碼頻率、卡方檢驗（是否均勻/公平）、冷熱號、奇偶/大小比 |
 | `model/predict.py` | 滯後頻率特徵 + MLP，用 log-loss 對比均勻隨機 baseline |

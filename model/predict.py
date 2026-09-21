@@ -81,6 +81,8 @@ def run(df: pd.DataFrame, lookback: int = 10) -> dict:
     result = {
         "lookback": lookback,
         "n_samples": int(len(X)),
+        "n_draws": int(len(df)),
+        "data_source": df.attrs.get("data_source", "unknown"),
         "mean_log_loss": mean_loss,
         "uniform_baseline_log_loss": baseline,
         "can_predict": mean_loss < baseline,  # 通常為 False
@@ -95,8 +97,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lookback", type=int, default=10)
     ap.add_argument("--csv", help="指定 CSV 路徑")
+    ap.add_argument("--allow-sample", action="store_true",
+                    help="容許在無真實數據時退回合成樣本（只供離線測試）")
     a = ap.parse_args()
-    df = freqmod.load(Path(a.csv) if a.csv else None)
+    df = freqmod.load(Path(a.csv) if a.csv else None, allow_sample=a.allow_sample)
     run(df, a.lookback)
 
 

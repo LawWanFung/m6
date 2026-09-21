@@ -42,20 +42,24 @@ def main():
     if a.real or a.latest:
         cmd = [str(SRC / "hkjc_fetch.py")]
         if a.latest:
-            cmd.append("--latest")
+            # 由主表最後一期抓到今日（睇 src/hkjc_fetch.py::fetch_since_last）
+            cmd.append("--since-last")
         else:
             cmd += ["--from", "1993-01-01"]
         run(cmd, "1) 抓取 HKJC 數據")
+        sample_args: list[str] = []
+        sample_args = ["--allow-sample"]
     else:
-        # 離線：先合成樣本數據，讓流程可跑
+        # 離線：先合成樣本數據，讓流程可跑（必須明確 --allow-sample 才會用）
         run([str(SRC / "gen_sample.py")], "0. 生成合成樣本（離線測試）")
+        sample_args = ["--allow-sample"]
     run([str(SRC / "build_history.py"), "--mode", "update" if a.latest else "build"],
         "2) 整合成主表")
 
-    run([str(BASE / "analyze" / "frequency.py")], "3) 統計分析")
+    run([str(BASE / "analyze" / "frequency.py"), *sample_args], "3) 統計分析")
 
     if not a.no_model:
-        run([str(BASE / "model" / "predict.py"), "--lookback", "10"], "4) 建模")
+        run([str(BASE / "model" / "predict.py"), "--lookback", "10", *sample_args], "4) 建模")
 
 
 if __name__ == "__main__":

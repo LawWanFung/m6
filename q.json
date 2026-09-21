@@ -1,0 +1,10 @@
+{
+  "operationName": "marksixResult",
+  "variables": {
+    "lastNDraw": 2,
+    "startDate": null,
+    "endDate": null,
+    "drawType": "All"
+  },
+  "query": "query marksixResult($lastNDraw: Int, $startDate: String, $endDate: String, $drawType: LotteryDrawType) {\n            lotteryDraws(lastNDraw: $lastNDraw, startDate: $startDate, endDate: $endDate, drawType: $drawType) {\n              id\n              year\n              no\n              openDate\n              closeDate\n              drawDate\n              status\n              snowballCode\n              snowballName_en\n              snowballName_ch\n              lotteryPool {\n                sell\n                status\n                totalInvestment\n                jackpot\n                unitBet\n                estimatedPrize\n                derivedFirstPrizeDiv\n                lotteryPrizes {\n                  type\n                  winningUnit\n                  dividend\n                }\n              }\n              drawResult {\n                drawnNo\n                xDrawnNo\n              }\n            }\n        }"
+}

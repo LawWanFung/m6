@@ -2,9 +2,12 @@
 數據整合 / 增量更新
 ===================
 
-1. build_history()   : 將 data/raw 下所有區間 JSON 合併成一份主表
+1. build_history()   : 將 data/raw 下所有 JSON 合併成一份主表
                        data/mark6_history.csv（按 date 排序，draw_id 去重）。
-2. update_latest()   : 抓取最近增量，只追加主表中尚無的記錄（按 draw_id 去重）。
+2. update_latest()   : 經 GraphQL 抓最近增量，只追加主表中尚無的記錄（按 draw_id 去重）。
+
+注意：GraphQL API 一次最多約 58 期（見 docs/hkjc_graphql_schema.md），
+所以「完整歷史」係靠本主表長期累積，唔可能一次過由 1993 年撈到最新。
 
 主表欄位：
     draw_id, date, numbers(6), extra_ball, snowball_code, snowball_name_ch,
@@ -19,7 +22,14 @@ import json
 import sys
 from pathlib import Path
 
-from hkjc_fetch import normalize, fetch_latest, _iter_date_range
+from hkjc_fetch import (
+    DEFAULT_DELAY,
+    DEFAULT_LAST_N_DRAW,
+    fetch_draws,
+    is_result,
+    normalize,
+    _iter_date_range,  # noqa: F401  （保留給外部／舊介面使用）
+)
 
 BASE = Path(__file__).resolve().parent.parent
 RAW_DIR = BASE / "data" / "raw"
@@ -48,7 +58,7 @@ def build_history() -> int:
         return 0
 
     seen: dict[str, dict] = {}
-    for seg in sorted(RAW_DIR.glob("seg_*.json")):
+    for seg in sorted(RAW_DIR.glob("*.json")):
         for rec in _load_seg(seg):
             did = rec["draw_id"]
             if did:
@@ -69,10 +79,22 @@ def build_history() -> int:
         w = csv.DictWriter(f, fieldnames=COLUMNS)
         w.writeheader()
         for r in rows:
-            w.writerow({k: r.get(k, "") for k in COLUMNS})
+            w.writerow(_row_for_csv(r))
 
     print(f"已整合 {len(rows)} 筆 -> {HISTORY_CSV}")
     return len(rows)
+
+
+def _row_for_csv(rec: dict) -> dict:
+    """轉成 CSV 可寫格式（numbers 必須以逗號字串輸出，否則 analyze.load() 解析唔到）。"""
+    out = {k: rec.get(k, "") for k in COLUMNS}
+    nums = rec.get("numbers")
+    if isinstance(nums, (list, tuple)):
+        out["numbers"] = ",".join(str(n) for n in nums)
+    for k, v in out.items():
+        if v is None:
+            out[k] = ""
+    return out
 
 
 def _sort_key(rec: dict):
@@ -95,22 +117,18 @@ def _existing_draw_ids() -> set[str]:
     return ids
 
 
-def update_latest(delay: float = 0.8) -> int:
-    """抓取最近增量，只追加新記錄到主表。"""
+def update_latest(delay: float = DEFAULT_DELAY, last_n: int = DEFAULT_LAST_N_DRAW) -> int:
+    """用 GraphQL 抓最近 last_n 期，只追加新記錄到主表。"""
     existing = _existing_draw_ids()
     added = 0
     new_rows: list[dict] = []
 
-    end = dt.date.today()
-    start = end - dt.timedelta(days=30)
-    for sd, ed in _iter_date_range(start, end):
-        recs = _fetch_range(sd, ed, delay)
-        for r in recs:
-            did = r["draw_id"]
-            if did and did not in existing:
-                new_rows.append(r)
-                existing.add(did)
-                added += 1
+    for rec in _fetch_range(last_n, delay):
+        did = rec["draw_id"]
+        if did and did not in existing:
+            new_rows.append(rec)
+            existing.add(did)
+            added += 1
 
     if new_rows:
         HISTORY_CSV.parent.mkdir(parents=True, exist_ok=True)
@@ -120,41 +138,28 @@ def update_latest(delay: float = 0.8) -> int:
             if mode == "w":
                 w.writeheader()
             for r in new_rows:
-                w.writerow({k: r.get(k, "") for k in COLUMNS})
+                w.writerow(_row_for_csv(r))
     print(f"增量更新完成，新增 {added} 筆。")
     return added
 
 
-def _fetch_range(sd: dt.date, ed: dt.date, delay: float):
-    """增量抓取單一區間（避免 import 循環）。"""
-    import time
-    import requests
-    params = {"sd": sd.strftime("%Y%m%d"), "ed": ed.strftime("%Y%m%d"), "sb": 0}
-    try:
-        resp = requests.get(
-            "http://bet.hkjc.com/marksix/getJSON.aspx",
-            params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=30,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if delay:
-                time.sleep(delay)
-            return [normalize(r) for r in data if r.get("id")]
-    except requests.RequestException as e:
-        print(f"  [!] 請求失敗 {sd}~{ed}: {e}", file=sys.stderr)
-    return []
+def _fetch_range(last_n: int, delay: float) -> list[dict]:
+    """經 GraphQL 抓最近 last_n 期並正規化（已開獎者）。"""
+    draws = fetch_draws(last_n, delay=delay)
+    return [normalize(d) for d in draws if is_result(d) and d.get("id")]
 
 
 def main():
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["build", "update"], default="build")
-    p.add_argument("--delay", type=float, default=0.8)
+    p.add_argument("--delay", type=float, default=DEFAULT_DELAY)
+    p.add_argument("--last-n", type=int, default=DEFAULT_LAST_N_DRAW, help="增量抓取最近 N 期")
     a = p.parse_args()
     if a.mode == "build":
         build_history()
     else:
-        update_latest(a.delay)
+        update_latest(a.delay, a.last_n)
 
 
 if __name__ == "__main__":

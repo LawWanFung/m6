@@ -11,10 +11,10 @@ venv/
 env/
 
 # Data
+# data/mark6_history.csv —— 真實歷史主表（1993 至今），**要入 repo**，唔可以 ignore
+# data/mark6_sample.csv —— 只供離線測試嘅合成樣本
+# data/raw/ —— GraphQL 原始回應快取，可重新抓取，唔入 repo
 data/raw/
-data/mark6_history.csv
-# 保留樣本檔供測試
-# !data/mark6_sample.csv
 
 # Model artifacts
 model/results/*.json
@@ -33,3 +33,6 @@ model/results/*.json
 # 部署用：Dokploy docker-compose 靠佢做 PORT 變數替換（僅含 PORT，無機密）
 # .env
 # .env.*
+
+# HKJC 前端 bundle（3.5MB 第三方資產，只作 API 研究參考；需要時自行下載）
+main.js
