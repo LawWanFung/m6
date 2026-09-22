@@ -27,4 +27,4 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Dokploy 以 Docker 方式部署時會執行此 CMD。
 # 使用 $PORT（Dokploy 會設定），預設 8000。
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
