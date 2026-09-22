@@ -13,7 +13,6 @@ env/
 logs/
 *.log
 data/raw/
-data/mark6_history.csv
 model/results/*.json
 analyze/results/*.json
 !model/results/.gitkeep

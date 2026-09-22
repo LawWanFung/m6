@@ -17,10 +17,24 @@ services:
     container_name: mark6
     restart: unless-stopped
 
+    # 啟動時先跑 entrypoint：若數據卷內冇歷史主表，就從 image 內附帶
+    # 嘅 seed 種子落去，避免 fresh deploy / 新 volume 開機去抓數據。
+    entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
+
     # Dokploy 靠 PORT 知道流量要轉發到邊個端口
     environment:
       - PORT=${PORT:-8000}
 
+    # 數據持久化到 named volume：
+    # 抓取按鈕寫入嘅 data/（新 CSV + raw/ 歷史快照）重啟後唔會失。
+    # entrypoint 開機時會先種子，再執行 uvicorn。
+    volumes:
+      - mark6_data:/app/data
+
     # 方便除錯（Dokploy 實際用域名路由，未必用得到）
     ports:
       - "${PORT:-8000}:8000"
+
+volumes:
+  mark6_data:
+    name: mark6_app_data
