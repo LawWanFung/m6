@@ -62,7 +62,8 @@
     <div class="card">
       <h3>熱號 / 冷號（主號）</h3>
       <div><b class="g">熱號</b><div class="nums" id="hotNums"></div></div>
-      <p style="margin:10px 0 6px"><b class="w">冷號</b><div class="nums" id="coldNums"></div></div>
+      <p style="margin:10px 0 6px"><b class="w">冷號</b><div class="nums" id="coldNums"></div></p>
+      <div class="muted">率 = 每期出現機率（已考慮 46–49 號歷史上場窗口，避免遲出號碼被誤判為冷）</div>
     </div>
     <div class="card">
       <h3>建模驗證（能否超贏隨機？）</h3>
@@ -95,12 +96,25 @@ function render(analysis, model){
   const srcNote = srcOk
     ? `✅ 真實 HKJC 數據${dr.first? `（${dr.first} ~ ${dr.last}）`:''}`
     : `⚠️ 非真實數據（${analysis.data_source||'unknown'}）`;
+
+  // 分時代公平性（考慮 46–49 號歷史上場窗口，三代各測各代 pool）
+  const eras = analysis.era_chi2 || [];
+  const eraRows = eras.map(e => {
+    const mc = e.main_chi2 || {};
+    const sig = mc.significant_05 === true || mc.significant_05 === 'True';
+    return `<div style="display:flex;justify-content:space-between;gap:8px">
+      <span>${e.era} · pool ${e.pool} · ${e.n_draws}期</span>
+      <span class="${sig?'w':'g'}">p=${mc.p_value!=null? mc.p_value.toFixed(3):'-'}</span>
+    </div>`;
+  }).join('') || '<div class="muted">無資料</div>';
+  const eraLast = eras[eras.length-1] || {};
+
   stats.innerHTML = `
     <div class="card"><h3>數據期數</h3><div class="stat">${analysis.n_draws}</div>
       <div class="muted" style="margin-top:6px">${srcNote}</div></div>
-    <div class="card"><h3>主號公平性 (χ²)</h3>
-      <div class="stat">${chi.p_value!=null? chi.p_value.toFixed(3):'-'}</div>
-      <div class="muted">${cc?'⚠️ 分佈有偏差':'✅ 符合均勻分佈'}</div></div>
+    <div class="card"><h3>公平性（分時代 χ²）</h3>
+      <div style="display:flex;flex-direction:column;gap:4px">${eraRows}</div>
+      <div class="muted" style="margin-top:6px">以最新一代（${eraLast.era||'-'}，pool ${eraLast.pool||'-'}）為主，避免遲出號碼（46–49）產生假性偏差</div></div>
     <div class="card"><h3>特別號公平性 (χ²)</h3>
       <div class="stat">${analysis.extra_chi2.p_value!=null? analysis.extra_chi2.p_value.toFixed(3):'-'}</div>
       <div class="muted">${(analysis.extra_chi2.significant_05==='True')?'⚠️ 有偏差':'✅ 均勻'}</div></div>
@@ -108,27 +122,28 @@ function render(analysis, model){
       <div class="stat">${(analysis.descriptive||{}).sum_mean!=null? Math.round(analysis.descriptive.sum_mean):'-'}</div>
       <div class="muted">標準差 ${(analysis.descriptive||{}).sum_std!=null? Math.round(analysis.descriptive.sum_std):'-'}</div></div>`;
 
-  // frequency chart
-  const freq = analysis.main_freq || {};
+  // frequency chart：改按『率』（每期出現機率，已按歷史上場窗口正規化）
+  const rate = analysis.main_rate || {};
   const labels = Array.from({length:49},(_,i)=>i+1);
-  const data = labels.map(l => freq[l] ?? 0);
+  const data = labels.map(l => rate[l] ?? 0);
+  const meanRate = data.reduce((a,b)=>a+b,0) / 49;
   if(freqChart) freqChart.destroy();
   freqChart = new Chart(document.getElementById('freqChart'), {
     type:'bar',
     data:{ labels, datasets:[{
-      label:'出現次數', data,
-      backgroundColor: labels.map(l => (freq[l]??0) > (analysis.n_numbers? analysis.n_numbers/49 : 0) ? '#3ec979' : '#e45b6b')
+      label:'每期出現率', data,
+      backgroundColor: labels.map(l => (rate[l]??0) >= meanRate ? '#3ec979' : '#e45b6b')
     }]},
-    options:{ responsive:true, plugins:{legend:{display:false}},
-      scales:{ x:{ticks:{color:'#8b90a8',maxRotation:90,minRotation:45}}, y:{ticks:{color:'#8b90a8'}}, } }
+    options:{ responsive:true, plugins:{legend:{display:false}, title:{display:true, text:'每期出現率（已按歷史上場窗口正規化）'}},
+      scales:{ x:{ticks:{color:'#8b90a8',maxRotation:90,minRotation:45}}, y:{ticks:{color:'#8b90a8', callback: v => (v*100).toFixed(1)+'%'}}, } }
   });
 
   // cold/hot
   const ch = analysis.cold_hot || {};
   const hot = document.getElementById('hotNums');
   const cold = document.getElementById('coldNums');
-  hot.innerHTML = Object.keys(ch.hot||{}).map(k=>`<span class="chip hot">${k}<sub style="opacity:.7">${ch.hot[k]}</sub></span>`).join('') || '<span class="muted">無資料</span>';
-  cold.innerHTML = Object.keys(ch.cold||{}).map(k=>`<span class="chip cold">${k}<sub style="opacity:.7">${ch.cold[k]}</sub></span>`).join('') || '<span class="muted">無資料</span>';
+  hot.innerHTML = Object.keys(ch.hot||{}).map(k=>`<span class="chip hot">${k}<sub style="opacity:.7">${(ch.hot[k]*100).toFixed(2)}%</sub></span>`).join('') || '<span class="muted">無資料</span>';
+  cold.innerHTML = Object.keys(ch.cold||{}).map(k=>`<span class="chip cold">${k}<sub style="opacity:.7">${(ch.cold[k]*100).toFixed(2)}%</sub></span>`).join('') || '<span class="muted">無資料</span>';
 
   // model
   const mi = document.getElementById('modelInfo');
