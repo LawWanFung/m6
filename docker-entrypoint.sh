@@ -15,6 +15,7 @@ CSV="${CSV:-mark6_history.csv}"
 
 echo "[entrypoint] mkdir -p $DATA_DIR"
 mkdir -p "$DATA_DIR"
+chmod 777 "$DATA_DIR"   # 暴力但有效，先讓佢寫到
 echo "[entrypoint] mkdir ok"
 
 # 只喺 volume 內冇主表時先複製（避免覆蓋已有的最新數據）
