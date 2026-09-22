@@ -19,7 +19,7 @@ services:
 
     # 啟動時先跑 entrypoint：若數據卷內冇歷史主表，就從 image 內附帶
     # 嘅 seed 種子落去，避免 fresh deploy / 新 volume 開機去抓數據。
-    entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
+    # entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
 
     # Dokploy 靠 PORT 知道流量要轉發到邊個端口
     environment:
