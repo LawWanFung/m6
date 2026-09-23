@@ -168,6 +168,23 @@ async def api_model() -> dict:
     return _load_model(10)
 
 
+def _load_models(lookback: int = 10) -> list:
+    """執行全部預測模型，返回有序結果列表（含均勻基線）。"""
+    from model.registry import run_all
+
+    return run_all(_load_df(), lookback)
+
+
+@app.get("/api/models")
+async def api_models(lookback: int = Query(10, ge=1, le=60)) -> dict:
+    """所有預測模型的結果比較（含均勻基線）＋分析數據（供儀表板渲染）。"""
+    return {
+        "lookback": lookback,
+        "analysis": _load_analysis(),
+        "models": _load_models(lookback),
+    }
+
+
 @app.get("/api/run")
 @app.post("/api/run")
 async def api_run(lookback: int = Query(10, ge=1, le=60)) -> dict:

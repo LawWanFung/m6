@@ -33,6 +33,7 @@ from sklearn.metrics import log_loss
 from sklearn.model_selection import TimeSeriesSplit
 
 import analyze.frequency as freqmod
+from model.base import parse_numbers
 
 RESULTS_DIR = BASE / "model" / "results"
 
@@ -42,11 +43,11 @@ def make_features(df: pd.DataFrame, lookback: int = 10) -> tuple[np.ndarray, np.
     為每一期建構特徵，目標 = 當期 6 個主號（多分類，49 類）。
     特徵：過去 lookback 期每個號碼的出現次數 (lookback x 49)。
     """
-    nums = [np.array(sorted(n)) for n in df["numbers"]]
+    nums = parse_numbers(df)
     X, y = [], []
-    for t in range(lookback, len(df)):
+    for t in range(lookback, len(nums)):
         window = np.concatenate([
-            np.bincount(df["numbers"].iloc[t - k], minlength=50)[1:50]
+            np.bincount(nums[t - k], minlength=50)[1:50]
             for k in range(1, lookback + 1)
         ])  # (lookback * 49,)
         # 每個「(期, 號碼)」為一個樣本，各獲一份特徵

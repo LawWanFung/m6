@@ -31,9 +31,21 @@
     .full { grid-column:1/-1; }
     #status { color:var(--warn); font-size:13px; }
     .nums { display:flex; flex-wrap:wrap; gap:6px; }
-    .chip { width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; background:#2a3158; }
+    .chip { width:50px; height:50px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; background:#2a3158; flex-direction: column; }
     .chip.hot { background:var(--good); color:#06210f; }
     .chip.cold { background:var(--bad); color:#2a0810; }
+    .r { text-align:right; }
+    #modelTable { width:100%; border-collapse:collapse; font-size:13px; }
+    #modelTable th, #modelTable td { padding:8px 10px; text-align:left; border-bottom:1px solid #262c4d; }
+    #modelTable th { color:var(--muted); font-weight:600; }
+    #modelTable td.r, #modelTable th.r { text-align:right; }
+    .mbadge { display:inline-block; padding:1px 7px; border-radius:6px; font-size:11px; }
+    .k-sklearn { background:rgba(91,141,239,.15); color:var(--accent); }
+    .k-統計 { background:rgba(230,181,74,.15); color:var(--warn); }
+    .k-深度學習 { background:rgba(160,120,240,.15); color:#c39fff; }
+    .k-baseline { background:rgba(139,144,168,.15); color:var(--muted); }
+    .chip-pred { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:#2a3158; color:var(--txt); font-size:11px; font-weight:600; margin:0 1px; }
+    .chip-pred.hi { background:var(--accent); color:#fff; }
   </style>
 </head>
 <body>
@@ -65,28 +77,40 @@
       <p style="margin:10px 0 6px"><b class="w">冷號</b><div class="nums" id="coldNums"></div></p>
       <div class="muted">率 = 每期出現機率（已考慮 46–49 號歷史上場窗口，避免遲出號碼被誤判為冷）</div>
     </div>
-    <div class="card">
-      <h3>建模驗證（能否超贏隨機？）</h3>
-      <div id="modelInfo" class="muted">載入中…</div>
+  </div>
+
+  <div class="chart-wrap">
+    <h3>🧠 多預測模型比較（log-loss 越低越好，均勻基線 = ln 49 ≈ 3.89）</h3>
+    <div class="muted" style="margin-bottom:12px">六合彩係獨立隨機事件，理論上沒有任何模型能長期勝過均勻隨機。下表所有模型都用同一個 metric（log-loss）對比，皆以均勻基線為參考線。</div>
+    <div style="background:#12162b;border:1px solid #262c4d;border-radius:10px;padding:14px">
+      <canvas id="modelChart" height="280"></canvas>
     </div>
+    <table id="modelTable" style="margin-top:16px">
+      <thead>
+        <tr><th>模型</th><th>類型</th><th>預測號碼</th><th>說明</th><th class="r">log-loss</th><th class="r">對基線</th><th>判定</th></tr>
+      </thead>
+      <tbody id="modelBody"><tr><td colspan="6" class="muted">載入中…</td></tr></tbody>
+    </table>
   </div>
 </main>
 
 <script>
 let freqChart = null;
+let modelChart = null;
 
 function fmt(v){ return (typeof v === 'object' && v !== null)
   ? Object.entries(v).map(([k,val])=>`${k}: ${Math.round(val)}`).join(' · ') : v; }
 
 async function fetchData(lookback){
   const url = lookback && lookback>0
-    ? `/api/run?lookback=${lookback}` : `/api/analysis`;
+    ? `/api/models?lookback=${lookback}` : `/api/analysis`;
   const r = await fetch(url);
   if(!r.ok) throw new Error('HTTP '+r.status);
-  return await r.json();
+  const d = await r.json();
+  return { analysis: d.analysis ?? d, models: d.models ?? [] };
 }
 
-function render(analysis, model){
+function render(analysis, models){
   // stats cards
   const stats = document.getElementById('stats');
   const chi = analysis.main_chi2 || {};
@@ -145,15 +169,80 @@ function render(analysis, model){
   hot.innerHTML = Object.keys(ch.hot||{}).map(k=>`<span class="chip hot">${k}<sub style="opacity:.7">${(ch.hot[k]*100).toFixed(2)}%</sub></span>`).join('') || '<span class="muted">無資料</span>';
   cold.innerHTML = Object.keys(ch.cold||{}).map(k=>`<span class="chip cold">${k}<sub style="opacity:.7">${(ch.cold[k]*100).toFixed(2)}%</sub></span>`).join('') || '<span class="muted">無資料</span>';
 
-  // model
-  const mi = document.getElementById('modelInfo');
-  if(model){
-    const ok = model.can_predict === true;
-    mi.innerHTML = `<div>樣本數：${model.n_samples}</div>
-      <div>模型 log-loss：<b>${(model.mean_log_loss).toFixed(3)}</b></div>
-      <div>均勻 baseline：${model.uniform_baseline_log_loss.toFixed(3)}</div>
-      <p style="margin-top:8px" class="${ok?'g':'w'}">${ok?'✅ 模型表現優於隨機（異常）':'❌ 模型輸給隨機 → 無法預測，符合預期'}</p>`;
+  // model comparison table + chart
+  renderModelChart(models);
+  renderModelTable(models);
+}
+
+function fmtLL(v){ return (v!=null && !Number.isNaN(v)) ? v.toFixed(3) : '—'; }
+
+// 將每個模型預測的 6 個號碼渲染成小 chips
+function predChips(pn){
+  if(!pn || pn.length === 0) return '<span class="muted">—</span>';
+  return pn.map((n,i) => `<span class="chip-pred${i===0?' hi':''}" title="預測第${i+1} 號">${n}</span>`).join('');
+}
+
+// 一次過 show 晒所有模型的 log-loss 條圖，配基線虛線作對比
+function renderModelChart(models){
+  const el = document.getElementById('modelChart');
+  if(modelChart) modelChart.destroy();
+  const base = 3.8918;
+  const arr = models || [];
+  const labels = arr.map(m => m.name);
+  const data = arr.map(m => m.mean_log_loss);
+  const colors = arr.map(m => {
+    const ll = m.mean_log_loss;
+    if(m.kind === 'baseline') return 'rgba(139,144,168,.55)';
+    if(ll == null) return 'rgba(230,181,74,.65)';
+    return ll < base ? '#3ec979' : '#e45b6b';
+  });
+  modelChart = new Chart(el, {
+    type:'bar',
+    data:{ labels, datasets:[
+      { label:'log-loss', data, backgroundColor: colors, borderColor: colors, borderWidth:1, barPercentage:0.7 },
+      { type:'line', label:'均勻基線', data: labels.map(()=>base),
+        borderColor:'#e6b54a', borderDash:[6,4], borderWidth:2, pointRadius:0, fill:false }
+    ]},
+    options:{
+      indexAxis:'y',
+      responsive:true,
+      plugins:{ legend:{display:true, labels:{color:'#e6e8f0'}},
+        title:{display:true, text:'各模型 log-loss 比較（均勻基線 = 3.89）'} },
+      scales:{
+        x:{ticks:{color:'#8b90a8', callback:v=>v.toFixed(1)}, min:0, startValue:0,
+           title:{display:true, text:'log-loss（越低越好）', color:'#8b90a8'}},
+        y:{ticks:{color:'#8b90a8', maxRotation:0}, grid:{color:'#262c4d'}}
+      }
+    }
+  });
+}
+
+function renderModelTable(models){
+  const base = Math.min(...(models||[]).map(m => m.mean_log_loss).filter(x => x!=null));
+  const tbody = document.getElementById('modelBody');
+  if(!models || models.length === 0){
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">無資料</td></tr>';
+    return;
   }
+  tbody.innerHTML = models.map(m => {
+    const ll = m.mean_log_loss;
+    const nearBase = (ll != null && Math.abs(ll - 3.8918) < 0.05);
+    const overBase = (ll != null && ll >= 3.8918);
+    let verdict, vclass;
+    if (m.can_predict === true) { verdict = '✅ 優於隨機（異常）'; vclass = 'g'; }
+    else if (ll == null) { verdict = '⚠️ 無結果'; vclass = 'w'; }
+    else if (nearBase) { verdict = '≈ 與隨機持平'; vclass = 'w'; }
+    else { verdict = '❌ 輸給隨機'; vclass = 'g'; }  // 輸給隨機 = 符合預期（正常）
+    return `<tr>
+      <td><b>${m.name}</b></td>
+      <td><span class="mbadge k-${m.kind||'misc'}">${m.kind||'/'}</span></td>
+      <td>${predChips(m.predicted_numbers)}</td>
+      <td class="muted">${m.description || ''}</td>
+      <td class="r"><b>${fmtLL(ll)}</b></td>
+      <td class="r">${ll != null ? (3.8918 - ll).toFixed(3) : '—'}</td>
+      <td class="${vclass}">${verdict}</td>
+    </tr>`;
+  }).join('');
 }
 
 async function run(){
@@ -162,7 +251,7 @@ async function run(){
   status.textContent = '分析中…';
   try {
     const d = await fetchData(lookback);
-    render(d.analysis, d.model);
+    render(d.analysis, d.models);
     status.textContent = `✓ 完成 @ ${new Date().toLocaleTimeString()}`;
   } catch(e){
     status.textContent = '✗ 出錯：'+e.message;

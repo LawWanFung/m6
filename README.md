@@ -88,10 +88,11 @@ python analyze/frequency.py
 
 | 端點 | 說明 |
 |------|------|
-| `GET /` | 儀表板（頻率圖、卡方檢驗、冷熱號、建模結果） |
+| `GET /` | 儀表板（頻率圖、卡方檢驗、冷熱號、多模型比較） |
 | `GET /api/analysis` | 統計分析 JSON |
-| `GET /api/model` | 建模結果 JSON |
-| `POST /api/run?lookback=N` | 重新執行分析 + 建模 |
+| `GET /api/model` | 單模型（MLP）結果 JSON（向後相容） |
+| `GET /api/models?lookback=N` | **所有預測模型的結果比較**（含均勻基線）+ 分析數據 |
+| `POST /api/run?lookback=N` | 重新執行分析 + 單模型建模 |
 | `POST /api/fetch` | 背景抓取：由「上次數據日期」抓到今日，再整合成主表（回 `task_id` 輪詢） |
 | `GET /api/fetch_status?task_id=…` | 抓取進度（`fetching` / `success` / `error`） |
 | `GET /api/health` | 健康檢查 + **數據來源資訊**（期數、日期範圍） |
@@ -165,13 +166,35 @@ services:
 | `src/hkjc_fetch.py` | 官方 GraphQL API 抓取：完整歷史（日期範圍分段）或增量 `--since-last`；`normalize()` 轉主表欄位 |
 | `src/build_history.py` | 合併所有 JSON → 主表 CSV（按 `draw_id` 去重），支援增量追加 |
 | `analyze/frequency.py` | 號碼頻率、卡方檢驗（是否均勻/公平）、冷熱號、奇偶/大小比 |
-| `model/predict.py` | 滯後頻率特徵 + MLP，用 log-loss 對比均勻隨機 baseline |
+| `model/base.py` | 共用特徵工程（`parse_numbers`、`multiclass_samples`）與模型基底介面 |
+| `model/ml_models.py` | sklearn 系列：邏輯回歸、隨機森林、高斯貝葉斯、MLP（共用評估骨架） |
+| `model/stat_models.py` | 統計／序列模型：頻率法（熱號）、馬爾可夫鏈趨勢 |
+| `model/registry.py` | **模型Registry**：統一執行全部模型，供 `/api/models` 與儀表板列出 |
+| `model/predict.py` | 單模型（MLP）基底，用 log-loss 對比均勻隨機 baseline（向後相容） |
 
 ## 為什麼模型「預測」會輸給隨機？
 
 `model/predict.py` 用過去 10 期號碼頻率作特徵訓練 MLP，預測下期各號碼機率，
 再以 log-loss 對比「均勻分佈 baseline（= ln(49) ≈ 3.89）」。
 結果模型 log-loss **高於** baseline —— 這正是六合彩不可預測的統計證據。
+
+## 多預測模型比較（儀表板）
+
+`GET /api/models?lookback=N` 會**同時執行全部模型**，由儀表板統一列出比較表
+（`🧠 多預測模型比較`）。所有模型都用同一個 metric（log-loss，越低越好），
+並以均勻基線（`ln 49 ≈ 3.89`）為參考線：
+
+| 模型 | 類型 | 思路 | 為何也贏不了隨機 |
+|------|------|------|----------------|
+| 均勻基線 Uniform | baseline | 理論參考線（log-loss = ln 49） | — |
+| 邏輯回歸 Logistic | sklearn | 線性權重組合 | 歷史頻率與下期無線性關係 |
+| 神經網絡 MLP | 深度學習 | 多層感知機非線性映射 | 無信號可學，過度擬合噪聲 |
+| 隨機森林 Random Forest | sklearn | 多棵决策樹集成 | 樹只能記憶歷史，泛化至零 |
+| 高斯樸素貝葉斯 | sklearn | 常態假設 + 貝葉斯後驗 | 獨立假設與實際不符，且無信號 |
+| 頻率法 熱號 Frequency | 統計 | 長週期熱號（賭徒謬誤） | 每期均等，熱號無預測力 |
+| 馬爾可夫鏈 趨勢 Markov | 統計 | 每號碼存在／不存在轉移 | 轉移機率趨向常態，無預測力 |
+
+所有模型的 log-loss 都 **≥ 均勻基線**，再次印證「六合彩無法預測」。
 
 ## 輸出結果
 
