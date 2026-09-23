@@ -59,7 +59,7 @@ class FrequencyModel(Predictor):
             "mean_log_loss": mean_loss,
             "uniform_baseline_log_loss": uniform_baseline(),
             "can_predict": self.verdict(mean_loss),
-            "predicted_numbers": [int(n) for n in sorted(top)] if top is not None else None,
+            "predicted_numbers": [int(n) + 1 for n in sorted(top)] if top is not None else None,
         }
 
 
@@ -124,5 +124,5 @@ class MarkovTrendModel(Predictor):
             "mean_log_loss": mean_loss,
             "uniform_baseline_log_loss": uniform_baseline(),
             "can_predict": self.verdict(mean_loss),
-            "predicted_numbers": [int(n) for n in sorted(top)],
+            "predicted_numbers": [int(n) + 1 for n in sorted(top)],
         }

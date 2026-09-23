@@ -96,7 +96,7 @@ class SklearnMulticlassModel(Predictor):
         for j, c in enumerate(classes):
             out[c - 1] = proba[j]
         top = np.argsort(out)[::-1][:6].tolist()
-        return [int(n) for n in sorted(top)]
+        return [int(n) + 1 for n in sorted(top)]
 
 
 class LogisticRegressionModel(SklearnMulticlassModel):
