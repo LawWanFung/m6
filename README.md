@@ -159,8 +159,10 @@ services:
 > docker-compose 會自動用 `.env` 做變數替換。
 
 > 🔑 **部署前必須喺 Dokploy「Environment Variables」設 `FETCH_TOKEN`**（隨機長字串）。
-> 未設時 `/api/fetch` 一律回 **503**（安全預設：寧停用，唔開成公開觸發點）；
-> Web 按鈕會提示。讀取端點（`/api/*` GET）唔需要 token。
+> 未設時 `/api/fetch` 一律回 **503**（安全預設：寧停用，唔開成公開觸發點）。
+> 已設時，**網頁工具列有「抓取 Token」欄**：輸入同一個 token（會存喺你瀏覽器
+> localStorage，下次唔使再填），按鈕就會帶 `X-Fetch-Token` header；唔匹配 → 403。
+> 讀取端點（`/api/*` GET）唔需要 token。
 
 > 🐳 容器以**非 root**（`app`）用戶運行。若你嘅 volume 係舊版（root 擁有）建嘅，
 > 首次啟動會報權限錯 → 刪掉舊 volume 重建（`docker volume rm mark6_mark6_app_data`，

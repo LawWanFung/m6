@@ -61,6 +61,10 @@
   <div class="toolbar">
     <button id="runBtn">重新分析</button>
     <button id="fetchBtn">🔄 抓取最新 HKJC 數據</button>
+    <label class="muted" title="必須同後端 env FETCH_TOKEN 一致；會存在你瀏覽器本地（localStorage）">
+      抓取 Token
+      <input id="fetchToken" type="password" placeholder="（後端有設 FETCH_TOKEN 時必填）" autocomplete="off" style="width:220px">
+    </label>
     <label class="muted">滯後期數 lookback
       <input id="lookback" type="number" value="10" min="1" max="60">
     </label>
@@ -286,6 +290,19 @@ async function run(){
   }
 }
 
+// 抓取 token：存在瀏覽器本地（localStorage），隨 /api/fetch 以 header 送出；
+// 後端未設 FETCH_TOKEN 時留空即可（端點停用時會回 503）。
+const tokenInput = document.getElementById('fetchToken');
+try { tokenInput.value = localStorage.getItem('m6_fetch_token') || ''; } catch(_){}
+tokenInput.addEventListener('change', () => {
+  try { localStorage.setItem('m6_fetch_token', tokenInput.value); } catch(_){}
+});
+
+function fetchHeaders(){
+  const t = (tokenInput.value || '').trim();
+  return t ? {'X-Fetch-Token': t} : {};
+}
+
 // 抓取最新 HKJC 數據（背景執行，輪詢進度）
 async function fetchLatest(){
   const status = document.getElementById('status');
@@ -293,10 +310,14 @@ async function fetchLatest(){
   btn.disabled = true;
   status.textContent = '抓取中…';
   try {
-    const r = await fetch('/api/fetch', {method:'POST'});
+    const r = await fetch('/api/fetch', {method:'POST', headers: fetchHeaders()});
     if(!r.ok){
       let msg = 'HTTP '+r.status;
       try { const j = await r.json(); if(j && j.detail) msg += '：'+j.detail; } catch(_){}
+      if(r.status === 403 && !(tokenInput.value||'').trim()){
+        msg += '（喺上面「抓取 Token」欄輸入後再試）';
+        tokenInput.focus();
+      }
       throw new Error(msg);
     }
     const { task_id } = await r.json();
