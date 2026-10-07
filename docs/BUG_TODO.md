@@ -156,16 +156,18 @@ implemented** in the same session; 10 new regression tests were added to `tests/
 
 **修復**：
 - [x] **R3-1 · 重複抓取** — `build_history.update_latest` 先重用 `last_all.json`（喺 600 秒內寫過 = 上一步 fetch 剛寫）→ 0 次額外 API 請求；過舊先重抓（獨立 CLI 行為不變）。
-- [x] **R3-2 · 限流偵測** — `fetch_since_last` 對每個窗口用開獎日表（週二/四/六）估算預期期數；回傳明顯少過 → 重試一次並取較完整。`_fetch_window` 最小窗口 200+空 → 重試一次先斷言「真實缺口」（唔再當終態）。
+- [x] **R3-2 · 限流 / 期數** — ~~對回傳期數做「齊唔齊」驗證~~（**已撤回**：HKJC 會因各种原因 skip 開彩，實測 2026-09-26~10-07 真係只 3 期——佢俾幾多就 merge 幾多）。保留：`_fetch_window` 最小窗口 200+空 → 重試一次先斷言「真實缺口」（限流時佢返 200+空，唔會 429；重試後仍空先當 gap，唔影響 merge）。
 - [x] **R3-3 · 排序 crash** — since-last 去重排序 key 兩欄全部 `str()`（String/Int 混合唔會再 `TypeError`）。
 - [x] **R3-4 · UI 可診斷** — `/api/fetch_status` 嘅 output 連 stderr 一併收埋（`[stderr] ...`），crash traceback 喺前端睇得到。
 - [x] **R3-5 · Token 輸入框樣式** — 跟住 lookback 輸入框同一套 CSS（`input[type=password]` 規則），唔再用 inline style（用戶反映「核突」）。
+
+- [x] **R3-6 · volume ownership（第二次事故根因）** — 實測 stderr：`PermissionError: /app/data/raw/last_all.json`。volume 係舊 root image 部署時建嘅（root 擁有 `raw/`），非 root 嘅 app 用戶讀得但寫唔入。修復：`docker-entrypoint.sh` 以 root 跑 → 偵測到非 app 擁有嘅 `data/`/`raw/`/主表 → `chown -R app:app`（**自動修復，保留現有數據，唔使刪 volume**）→ 可寫性驗證（`data/` + `raw/` 兩層）→ `gosu app` 降權先 exec。Dockerfile：裝 `gosu`、移除 `USER app`（entrypoint 需要 root 身份先 chown 得）、保留 `ENTRYPOINT`。
 
 **附註（數據量 4390 vs 4392）**：部署機 volume 嘅主表比 repo 提交版本多 2 期（到 09/26）—— 係之前成功抓取寫入 volume 嘅，**屬正常**（volume 恆比 repo 新；repo 嘅 `mark6_history.csv` 只係新部署嘅 seed）。
 
 ## Pre-commit checklist (round 3)
 
-- [x] 5 個新迴歸測試（reuse fresh last_all / stale 重抓 / partial 重試 / min-empty 重試×2 / stderr 入 output）；`python -m pytest -q` → **49 passed**（全離線，~40s）。
+- [x] 新迴歸測試（reuse fresh last_all / stale 重抓 / min-empty 重試×2 / stderr 入 output；partial-count 驗證已按用戶指示移除）；`python -m pytest -q` 全綠（全離線）。
 - [x] 簡體字 sweep：新改動全部零簡體（本文件嘅「里|裏 / 后|後」係共用字註釋，屬故意）。
 - [x] 前端 token 框樣式統一。
 - [x] 推上 main → Dokploy re-deploy → 再點一次「抓取新數據」驗證（預期：重試邏輯補返被截斷嘅期；就算真冇新期，build 亦係 success「新增 0 期」而唔係報錯）。

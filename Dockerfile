@@ -18,6 +18,12 @@ RUN groupadd --system app \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# gosu：entrypoint 以 root 先 chown 數據卷（自動修復舊 root volume），
+# 然後降權到 app 先跑應用（應用本身全程非 root）。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
+
 # 複製程式碼（owner = app 用戶）
 COPY --chown=app:app . .
 
@@ -33,7 +39,12 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
     && chown -R app:app /app
 
-USER app
+# ⚠️ 唔喺呢度寫 `USER app`：entrypoint 需要以 root 身份執行一次
+# （chown 數據卷 = 自動修復舊 root image 建嘅 volume），然後用 gosu 降權
+# 到 app 先 exec 應用。若喺呢度寫 USER app，entrypoint 亦會以 app 跑，
+# 就唔可能 chown 返 root 擁有嘅目錄，舊 volume 會一直不可寫。
+# （直接 `docker run --entrypoint ...` 繞過 script 嘅情況只係開發調試，
+#   生產部署一律經 entrypoint + gosu。）
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Dokploy 以 Docker 方式部署時會執行此 CMD。

@@ -546,24 +546,6 @@ def fetch_normalized(
 # ---------------------------------------------------------------- 寫檔
 
 
-#: 六合彩開獎日（週二/四/六；Python `date.weekday()`：Mon=0）
-DRAW_WEEKDAYS = (1, 3, 5)
-
-
-def _expected_draw_count(ws: dt.date, we: dt.date, today: dt.date) -> int:
-    """預計 [ws, we] 內「已公布」嘅開獎期數（用嚟偵測限流截斷）。
-
-    今日（晚場未開獎）排除；預期數係下限參考，實測多返冇關係。
-    """
-    n = 0
-    d = ws
-    while d <= we:
-        if d.weekday() in DRAW_WEEKDAYS and d < today:
-            n += 1
-        d += dt.timedelta(days=1)
-    return n
-
-
 def _write_segment(out_dir: Path, name: str, recs: list[dict]) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     seg = out_dir / name
@@ -687,19 +669,8 @@ def fetch_since_last(
             failed.append(f"{ws} ~ {we}")
             print(f"  [!] 窗口 {ws} ~ {we} 請求失敗（唔係「冇數據」）。", file=sys.stderr)
             continue
-        # 偵測「限流截斷」：回傳期數明顯少過開獎日預期（週二/四/六）→ 重試一次。
-        # 寧願多重抓一次，唔好靜默漏期——since-last 窗口只向前行，漏咗就永久缺口。
-        if status == "ok" and draws:
-            expected = _expected_draw_count(ws, we, today)
-            if expected >= 2 and len(draws) < expected - 1:
-                print(f"  [!] {ws} ~ {we} 只返 {len(draws)} 期（預期 ~{expected}），疑似限流截斷，重試一次...")
-                time.sleep(5.0)
-                d2, s2 = _fetch_window(ws, we, draw_type=draw_type, delay=0.0)
-                if s2 == "ok" and len(d2) > len(draws):
-                    print(f"  重試返 {len(d2)} 期（採用較完整嗰份）")
-                    draws = d2
-                else:
-                    print("  重試後仍唔完整；保留現有結果，下次 since-last 會再重抓。")
+        # ⚠️ 唔好對回傳期數做「齊唔齊」驗證：HKJC 會因為各种原因 skip 開彩
+        # （實測 2026-09-26 ~ 10-07 真係只有 3 期），佢俾幾多就 merge 幾多。
         label = "  （此區間無攪珠記錄）" if status == "gap" else ""
         print(f"  [{i}/{len(windows)}] {ws} ~ {we}: {len(draws):>3} 筆{label}")
         collected.extend(draws)

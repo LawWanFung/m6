@@ -164,9 +164,10 @@ services:
 > localStorage，下次唔使再填），按鈕就會帶 `X-Fetch-Token` header；唔匹配 → 403。
 > 讀取端點（`/api/*` GET）唔需要 token。
 
-> 🐳 容器以**非 root**（`app`）用戶運行。若你嘅 volume 係舊版（root 擁有）建嘅，
-> 首次啟動會報權限錯 → 刪掉舊 volume 重建（`docker volume rm mark6_mark6_app_data`，
-> 先備份 `data/mark6_history.csv`）。
+> 🐳 容器內應用以**非 root**（`app`）用戶運行。若你嘅 volume 係舊版（root）image 建嘅，
+> 首次啟動 entrypoint 會**自動** chown 返 `app:app`（保留現有數據，唔使手動刪）；
+> 若自動修復失敗會清晰報錯。萬一仍要重建：`docker volume rm mark6_app_data`
+>（先備份 `data/mark6_history.csv`）。
 >
 > 💾 **volume 嘅主表會比 repo 新**：增量更新只寫入 volume，repo 嘅 `mark6_history.csv`
 > 只係新部署嘅 seed（首次啟動先 seed 入空 volume）。所以部署後網頁顯示嘅「最後日期」

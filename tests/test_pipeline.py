@@ -442,34 +442,6 @@ def test_update_latest_refetches_when_last_all_stale(tmp_path, monkeypatch):
     assert calls == [1], "舊快取必須重抓"
 
 
-def test_fetch_since_last_retries_partial_result(tmp_path, monkeypatch):
-    """R3-2：since-last 窗口回傳期數明顯少過開獎日預期（週二/四/六）→ 限流截斷
-    嫌疑 → 重試一次並採用較完整嗰份。漏咗嘅期會永久缺口（窗口只向前行）。
-    """
-
-    class _NoSleep:
-        def sleep(self, s):
-            pass
-
-    monkeypatch.setattr(hf, "time", _NoSleep())
-    monkeypatch.setattr(hf, "last_stored_date", lambda **kw: dt.date(2026, 9, 26))
-
-    calls = {"n": 0}
-
-    def fake_window(ws, we, draw_type="All", delay=0.0):
-        calls["n"] += 1
-        n = 3 if calls["n"] == 1 else 5
-        return [{"id": f"2026{i:03d}A"} for i in range(1, n + 1)], "ok"
-
-    monkeypatch.setattr(hf, "_fetch_window", fake_window)
-
-    stats = hf.fetch_since_last(tmp_path / "raw", draw_type="All", delay=0,
-                                today=dt.date(2026, 10, 7))
-    assert stats.get("error") is None
-    assert stats["draws"] == 5, "重試後要採用完整嗰份（5 期）"
-    assert calls["n"] == 2, "只重試一次"
-
-
 def test_fetch_window_min_empty_retries_once(monkeypatch):
     """R3-2：最小窗口返 200+空（實測：限流時唔會 429、靜默返空）→ 重試一次先斷言
     「真實缺口」。"""
