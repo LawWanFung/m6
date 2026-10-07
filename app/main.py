@@ -206,6 +206,19 @@ def _prune_tasks() -> None:
             _fetch_tasks.pop(tid, None)
 
 
+def _append_proc_output(out: list[str], p: subprocess.CompletedProcess) -> None:
+    """把子程序輸出收埋進任務 output（stdout 同 stderr 都要 —— 舊版只收 stdout，
+    crash 嘅 traceback 全部喺 stderr，UI 上成日只見到「前半段 + 離奇 exit 1」）。"""
+    so = (p.stdout or "").strip()
+    se = (p.stderr or "").strip()
+    if so:
+        out.append(so)
+    if se:
+        out.append(f"[stderr] {se}")
+    if not so and not se:
+        out.append("(無輸出)")
+
+
 def _run_task(task_id: str) -> None:
     """後台執行：抓取 HKJC → 整合主表。
 
@@ -223,7 +236,7 @@ def _run_task(task_id: str) -> None:
             cwd=str(BASE), timeout=FETCH_TIMEOUT,
         )
         out.append(">>> hkjc_fetch.py --since-last")
-        out.append(p1.stdout.strip() or p1.stderr.strip() or "(無輸出)")
+        _append_proc_output(out, p1)
 
         if p1.returncode != 0:
             # ⚠️ 抓取失敗 ≠ 該區間無開獎。不能把它當成「更新完成」。
@@ -244,7 +257,7 @@ def _run_task(task_id: str) -> None:
             cwd=str(BASE), timeout=BUILD_TIMEOUT,
         )
         out.append(">>> build_history.py --mode build")
-        out.append(p2.stdout.strip() or p2.stderr.strip() or "(無輸出)")
+        _append_proc_output(out, p2)
 
         if p2.returncode != 0:
             task.update({

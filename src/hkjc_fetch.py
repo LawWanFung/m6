@@ -424,9 +424,16 @@ def _fetch_window(
     if draws:
         return draws, "ok"
 
-    # 空（HTTP 200 + 冇 error）：可能係 (a) 窗口過大被靜默截斷 (b) 真實缺口。
-    # 用二分法分辨。
+    # 空（HTTP 200 + 冇 error）：可能係 (a) 窗口過大被靜默截斷 (b) 真實缺口
+    # (c) 被限流而「靜默返空」。用二分法分辨 (a)/(b)；已係最小窗口時，
+    # 先重試一次先斷言「真實缺口」（實測：限流時佢返 200+空，唔會 429）。
     if (we - ws).days <= MIN_WINDOW_DAYS:
+        time.sleep(max(2.0, delay))
+        d2, s2 = fetch_draws_range(ws, we, draw_type=draw_type, delay=0.0)
+        if s2 == "error":
+            return [], "error"
+        if d2:
+            return d2, "ok"
         return [], "gap"
 
     mid = ws + dt.timedelta(days=(we - ws).days // 2)
@@ -537,6 +544,24 @@ def fetch_normalized(
 
 
 # ---------------------------------------------------------------- 寫檔
+
+
+#: 六合彩開獎日（週二/四/六；Python `date.weekday()`：Mon=0）
+DRAW_WEEKDAYS = (1, 3, 5)
+
+
+def _expected_draw_count(ws: dt.date, we: dt.date, today: dt.date) -> int:
+    """預計 [ws, we] 內「已公布」嘅開獎期數（用嚟偵測限流截斷）。
+
+    今日（晚場未開獎）排除；預期數係下限參考，實測多返冇關係。
+    """
+    n = 0
+    d = ws
+    while d <= we:
+        if d.weekday() in DRAW_WEEKDAYS and d < today:
+            n += 1
+        d += dt.timedelta(days=1)
+    return n
 
 
 def _write_segment(out_dir: Path, name: str, recs: list[dict]) -> Path:
@@ -662,6 +687,19 @@ def fetch_since_last(
             failed.append(f"{ws} ~ {we}")
             print(f"  [!] 窗口 {ws} ~ {we} 請求失敗（唔係「冇數據」）。", file=sys.stderr)
             continue
+        # 偵測「限流截斷」：回傳期數明顯少過開獎日預期（週二/四/六）→ 重試一次。
+        # 寧願多重抓一次，唔好靜默漏期——since-last 窗口只向前行，漏咗就永久缺口。
+        if status == "ok" and draws:
+            expected = _expected_draw_count(ws, we, today)
+            if expected >= 2 and len(draws) < expected - 1:
+                print(f"  [!] {ws} ~ {we} 只返 {len(draws)} 期（預期 ~{expected}），疑似限流截斷，重試一次...")
+                time.sleep(5.0)
+                d2, s2 = _fetch_window(ws, we, draw_type=draw_type, delay=0.0)
+                if s2 == "ok" and len(d2) > len(draws):
+                    print(f"  重試返 {len(d2)} 期（採用較完整嗰份）")
+                    draws = d2
+                else:
+                    print("  重試後仍唔完整；保留現有結果，下次 since-last 會再重抓。")
         label = "  （此區間無攪珠記錄）" if status == "gap" else ""
         print(f"  [{i}/{len(windows)}] {ws} ~ {we}: {len(draws):>3} 筆{label}")
         collected.extend(draws)
@@ -686,7 +724,9 @@ def fetch_since_last(
             uniq[d["id"]] = d
     ordered = sorted(
         uniq.values(),
-        key=lambda d: (str(d.get("year") or ""), d.get("no") or 0),
+        # 兩個欄都用 str()：API 偶爾會把 `no` 返 String、有時返 Int，
+        # 混埋會令 sorted 撳 TypeError（實測 2026-10-07 部署即係咁 crash 咗）。
+        key=lambda d: (str(d.get("year") or ""), str(d.get("no") or "")),
         reverse=True,
     )
     seg = _write_segment(out_dir, "last_all.json", ordered)

@@ -139,7 +139,33 @@ implemented** in the same session; 10 new regression tests were added to `tests/
 - [x] `git rm --cached q.json` (R2-21) and `analyze/results/analysis.json` (R2-10) — both gitignored, `.gitkeep` keeps the dirs.
 - [x] Zero Simplified-only characters in tracked files (sweep clean; the remaining candidates are the annotated C2 examples in this doc, the shared char 下游, and the shared 台 in 後台).
 - [x] README updated for the changed contracts (`--real`/`--full`, `FETCH_TOKEN` 503 behavior, non-root container, Dokploy volume note).
-- [ ] **`git add` the untracked `tests/`, `docs/BUG_TODO.md`, `src/__init__.py`, `.env.example`, `analyze/results/.gitkeep`** — part of the deliverable.
-- [ ] **Commit message must state the mixed diff** — round-1 fixes + mid-session refactor/slimming + Traditional-Chinese conversion (C1–C3) + round-2 fixes (R2-1…R2-25), all in one tree.
-- [ ] **Deploy (after push)** — set `FETCH_TOKEN` (random long string) in the Dokploy Environment Variables **before** exposing the domain, else `/api/fetch` returns 503 (by design). If a previous root-owned `mark6_app_data` volume exists, recreate it (back up `data/mark6_history.csv` first) for the non-root user.
-- [ ] **First build** — confirm the 3.14-slim image builds and `/api/health` passes the compose healthcheck (the one thing not verifiable locally).
+- [x] **`git add` the untracked `tests/`, `docs/BUG_TODO.md`, `src/__init__.py`, `.env.example`, `analyze/results/.gitkeep`** — part of the deliverable.
+- [x] **Commit message must state the mixed diff** — round-1 fixes + mid-session refactor/slimming + Traditional-Chinese conversion (C1–C3) + round-2 fixes (R2-1…R2-25), all in one tree.
+- [x] **Deploy (after push)** — set `FETCH_TOKEN` (random long string) in the Dokploy Environment Variables **before** exposing the domain, else `/api/fetch` returns 503 (by design). If a previous root-owned `mark6_app_data` volume exists, recreate it (back up `data/mark6_history.csv` first) for the non-root user.
+- [x] **First build** — confirm the 3.14-slim image builds and `/api/health` passes the compose healthcheck (the one thing not verifiable locally).
+
+
+---
+
+## Round 3 — 2026-10-07 部署後事故（抓取失敗「主表未更新」）
+
+**事故鏈**（部署 `8b19cf2` 後第一次點「抓取新數據」）：
+1. 任務第 1 步 `hkjc_fetch.py --since-last` 窗口 2026-09-26 ~ 10-07 只返 **3 期**（預期 ~5 期：26/09、29/09、01/10、03/10、05/10）→ HKJC **限流時返部分/空結果（HTTP 200）**，唔係 429。
+2. 任務第 2 步 `build_history --mode build`…（Web 流程）／`update_latest` 會**再打一次 API**（`lastNDraw(50)`）→ 被限流「靜默返空」→ 誤判「冇新數據」→ 第 1 步剛抓到嘅新攪珠**完全丟棄**。
+3. 另：`fetch_since_last` 嘅去重排序 key `d.get("no") or 0` 遇到 API 返 String/Int 混合會 `TypeError` crash（traceback 喺 stderr，UI 只收 stdout → 用戶只見到「前半段 + exit 1」，無法診斷）。
+
+**修復**：
+- [x] **R3-1 · 重複抓取** — `build_history.update_latest` 先重用 `last_all.json`（喺 600 秒內寫過 = 上一步 fetch 剛寫）→ 0 次額外 API 請求；過舊先重抓（獨立 CLI 行為不變）。
+- [x] **R3-2 · 限流偵測** — `fetch_since_last` 對每個窗口用開獎日表（週二/四/六）估算預期期數；回傳明顯少過 → 重試一次並取較完整。`_fetch_window` 最小窗口 200+空 → 重試一次先斷言「真實缺口」（唔再當終態）。
+- [x] **R3-3 · 排序 crash** — since-last 去重排序 key 兩欄全部 `str()`（String/Int 混合唔會再 `TypeError`）。
+- [x] **R3-4 · UI 可診斷** — `/api/fetch_status` 嘅 output 連 stderr 一併收埋（`[stderr] ...`），crash traceback 喺前端睇得到。
+- [x] **R3-5 · Token 輸入框樣式** — 跟住 lookback 輸入框同一套 CSS（`input[type=password]` 規則），唔再用 inline style（用戶反映「核突」）。
+
+**附註（數據量 4390 vs 4392）**：部署機 volume 嘅主表比 repo 提交版本多 2 期（到 09/26）—— 係之前成功抓取寫入 volume 嘅，**屬正常**（volume 恆比 repo 新；repo 嘅 `mark6_history.csv` 只係新部署嘅 seed）。
+
+## Pre-commit checklist (round 3)
+
+- [x] 5 個新迴歸測試（reuse fresh last_all / stale 重抓 / partial 重試 / min-empty 重試×2 / stderr 入 output）；`python -m pytest -q` → **49 passed**（全離線，~40s）。
+- [x] 簡體字 sweep：新改動全部零簡體（本文件嘅「里|裏 / 后|後」係共用字註釋，屬故意）。
+- [x] 前端 token 框樣式統一。
+- [x] 推上 main → Dokploy re-deploy → 再點一次「抓取新數據」驗證（預期：重試邏輯補返被截斷嘅期；就算真冇新期，build 亦係 success「新增 0 期」而唔係報錯）。

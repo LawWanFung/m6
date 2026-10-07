@@ -20,6 +20,7 @@ import csv
 import datetime as dt
 import json
 import sys
+import time
 from pathlib import Path
 
 # `hkjc_fetch` 係同目錄模塊。先把 src/ 加入 sys.path，令呢度喹任何 cwd /
@@ -40,6 +41,11 @@ from hkjc_fetch import (
 )
 RAW_DIR = BASE / "data" / "raw"
 HISTORY_CSV = BASE / "data" / "mark6_history.csv"
+
+#: last_all.json 多「新」先算新（秒）。run_all／Web 流程係「先 fetch 再 build」，
+#: 幾秒前剛寫嘅 raw 快取直接重用，唔好再打一次 HKJC（實測佢會限流「靜默返空」，
+#: 把「剛先抓到嘅新攪珠」誤判為「冇新數據」而丟棄 —— 2026-10-07 部署即係咁中招）。
+LAST_ALL_FRESH_SECONDS = 600
 
 COLUMNS = [
     "draw_id", "date", "numbers", "extra_ball", "snowball_code",
@@ -193,6 +199,21 @@ def _sort_key(rec: dict):
         return (9999, 99, 99)
 
 
+def _read_fresh_last_all() -> tuple[list[dict] | None, str | None]:
+    """`last_all.json` 喺 `LAST_ALL_FRESH_SECONDS` 內寫過 → 回傳 (recs, "ok")；
+    檔案缺失／過舊 → (None, None)（叫上層改去 API 重抓）。
+    """
+    seg = RAW_DIR / "last_all.json"
+    try:
+        fresh = time.time() - seg.stat().st_mtime <= LAST_ALL_FRESH_SECONDS
+    except OSError:
+        return None, None
+    if not fresh:
+        return None, None
+    recs = _load_seg(seg)
+    return recs, "ok"
+
+
 def update_latest(delay: float = DEFAULT_DELAY, last_n: int = DEFAULT_LAST_N_DRAW) -> int:
     """用 GraphQL 抓最近 last_n 期，合併進主表。
 
@@ -207,7 +228,10 @@ def update_latest(delay: float = DEFAULT_DELAY, last_n: int = DEFAULT_LAST_N_DRA
          倒序尾段 = 用「未來」做「過去」（泄漏／垃圾特徵）。整檔排序寫回先穩妥。
       3. 寫回前驗證 header 同 COLUMNS 一致（舊 schema 檔案會令字段漂移）。
     """
-    fetched, status = _fetch_range(last_n, delay)
+    # 優先重用新嘅 last_all.json（上一步 fetch 剛寫）；過舊先再打 API。
+    fetched, status = _read_fresh_last_all()
+    if status is None:
+        fetched, status = _fetch_range(last_n, delay)
     if status == "error":
         print("[!] 增量抓取失敗（網絡／API 問題），主表未改動。", file=sys.stderr)
         return -1

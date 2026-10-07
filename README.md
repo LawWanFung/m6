@@ -97,7 +97,7 @@ python analyze/frequency.py
 | `GET /api/model` | 單模型（MLP）結果 JSON（向後相容） |
 | `GET /api/models?lookback=N` | **所有預測模型的結果比較**（含均勻基線）+ 分析數據 |
 | `POST /api/run?lookback=N` | 重新執行分析 + 單模型建模 |
-| `POST /api/fetch` | 背景抓取：由「上次數據日期」抓到今日，再整合成主表（回 `task_id` 輪詢）。**需要 token**（`X-Fetch-Token` header 或 `?token=`）；**未設 `FETCH_TOKEN` env 時一律回 503（端點停用）**，防止公開部署忘設 token 被任意觸發 |
+| `POST /api/fetch` | 背景抓取：由「上次數據日期」抓到今日，再整合成主表（回 `task_id` 輪詢）。**需要 token**（`X-Fetch-Token` header，同後端 env `FETCH_TOKEN` 一致）；**未設 `FETCH_TOKEN` env 時一律回 503（端點停用）**，防止公開部署忘設 token 被任意觸發 |
 | `GET /api/fetch_status?task_id=…` | 抓取進度（`fetching` / `success` / `error`） |
 | `GET /api/health` | 健康檢查 + **數據來源資訊**（期數、日期範圍） |
 
@@ -167,6 +167,10 @@ services:
 > 🐳 容器以**非 root**（`app`）用戶運行。若你嘅 volume 係舊版（root 擁有）建嘅，
 > 首次啟動會報權限錯 → 刪掉舊 volume 重建（`docker volume rm mark6_mark6_app_data`，
 > 先備份 `data/mark6_history.csv`）。
+>
+> 💾 **volume 嘅主表會比 repo 新**：增量更新只寫入 volume，repo 嘅 `mark6_history.csv`
+> 只係新部署嘅 seed（首次啟動先 seed 入空 volume）。所以部署後網頁顯示嘅「最後日期」
+> 可能比 GitHub 上嘅新，屬正常現象。
 
 ### 為什麼 `/` 直接返回 HTML 而非用 Jinja 伺服器端渲染？
 此環境的 Starlette 1.2.x 與 Jinja2 3.1.x 在模板快取上有版本相容問題，

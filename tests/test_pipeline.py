@@ -309,6 +309,7 @@ def test_update_latest_backfill_keeps_file_sorted(tmp_path, monkeypatch):
     """
     master = tmp_path / "data" / "mark6_history.csv"
     monkeypatch.setattr(bh, "HISTORY_CSV", master)
+    monkeypatch.setattr(bh, "RAW_DIR", tmp_path / "raw")  # 隔離開發機嘅真實 raw 快取
     _write_master(master, [
         _master_row("A", "05/01/2020", "1,2,3,4,5,6"),
         _master_row("B", "10/01/2020", "7,8,9,10,11,12"),
@@ -336,6 +337,7 @@ def test_update_latest_header_mismatch_aborts(tmp_path, monkeypatch):
     master.write_text("draw_id,date,nums,xb\nA,05/01/2020,1,2,3,4,5,6,7\n", encoding="utf-8")
     before = master.read_text(encoding="utf-8")
     monkeypatch.setattr(bh, "HISTORY_CSV", master)
+    monkeypatch.setattr(bh, "RAW_DIR", tmp_path / "raw")  # 隔離開發機嘅真實 raw 快取
     monkeypatch.setattr(bh, "_fetch_range", lambda last_n, delay: (
         [bh.normalize(_raw_rec("X1", "2026-10-03", ["1","2","3","4","5","6"]))], "ok"))
     assert bh.update_latest() == -1
@@ -345,6 +347,7 @@ def test_update_latest_header_mismatch_aborts(tmp_path, monkeypatch):
 def test_update_latest_failure_leaves_master_untouched(tmp_path, monkeypatch):
     master = tmp_path / "data" / "mark6_history.csv"
     monkeypatch.setattr(bh, "HISTORY_CSV", master)
+    monkeypatch.setattr(bh, "RAW_DIR", tmp_path / "raw")  # 隔離開發機嘅真實 raw 快取
     _write_master(master, [_master_row("A", "05/01/2020", "1,2,3,4,5,6")])
     before = master.read_text(encoding="utf-8")
     monkeypatch.setattr(bh, "_fetch_range", lambda last_n, delay: ([], "error"))
@@ -377,3 +380,135 @@ def test_write_analysis_skips_when_unchanged(tmp_path, monkeypatch):
     assert (tmp_path / "analysis.json").stat().st_mtime_ns == mtime1
     # 內容變了 → 要寫
     assert fm._write_analysis({"a": 2}) is True
+
+
+# ───────────────────── R3（2026-10-07 部署事故） ─────────────────────
+
+
+def test_update_latest_reuses_fresh_last_all_without_api(tmp_path, monkeypatch):
+    """R3-1：update_latest 必須重用「新」last_all.json（上一步 fetch 剛寫咗），
+    唔可以再打第二次 HKJC（實測：佢限流「靜默返空」→ 剛先抓到嘅新攪珠被
+    誤判「冇新數據」而丟棄）。
+    """
+    import os as _os
+    import time as _t
+
+    master = tmp_path / "data" / "mark6_history.csv"
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    monkeypatch.setattr(bh, "HISTORY_CSV", master)
+    monkeypatch.setattr(bh, "RAW_DIR", raw)
+    _write_master(master, [_master_row("A", "05/01/2020", "1,2,3,4,5,6")])
+
+    # 「剛剛寫」嘅 last_all.json（raw 格式、新期）
+    seg = raw / "last_all.json"
+    seg.write_text(json.dumps([
+        _raw_rec("NEW1", "2020-01-15", ["26", "27", "28", "29", "30", "31"]),
+    ]), encoding="utf-8")
+    now = _t.time()
+    _os.utime(seg, (now, now))
+
+    def _boom(last_n, delay):
+        raise AssertionError("有新嘅 last_all.json 時唔應該再打 API")
+
+    monkeypatch.setattr(bh, "_fetch_range", _boom)
+    assert bh.update_latest() == 1
+    out = pd.read_csv(master)
+    assert out["draw_id"].tolist() == ["A", "NEW1"]
+
+
+def test_update_latest_refetches_when_last_all_stale(tmp_path, monkeypatch):
+    """R3-1：last_all.json 過舊（獨立手動執行情境）→ 仍然去 API 重抓。"""
+    import os as _os
+    import time as _t
+
+    master = tmp_path / "data" / "mark6_history.csv"
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    monkeypatch.setattr(bh, "HISTORY_CSV", master)
+    monkeypatch.setattr(bh, "RAW_DIR", raw)
+    _write_master(master, [_master_row("A", "05/01/2020", "1,2,3,4,5,6")])
+
+    seg = raw / "last_all.json"
+    seg.write_text(json.dumps([_raw_rec("X", "2020-01-15", ["1", "2", "3", "4", "5", "6"])]),
+                   encoding="utf-8")
+    old = _t.time() - 3600  # 一小時前（超出 600 秒新淨窗口）
+    _os.utime(seg, (old, old))
+
+    calls = []
+    monkeypatch.setattr(bh, "_fetch_range",
+                        lambda last_n, delay: (calls.append(1), ([], "ok"))[1])
+    bh.update_latest()
+    assert calls == [1], "舊快取必須重抓"
+
+
+def test_fetch_since_last_retries_partial_result(tmp_path, monkeypatch):
+    """R3-2：since-last 窗口回傳期數明顯少過開獎日預期（週二/四/六）→ 限流截斷
+    嫌疑 → 重試一次並採用較完整嗰份。漏咗嘅期會永久缺口（窗口只向前行）。
+    """
+
+    class _NoSleep:
+        def sleep(self, s):
+            pass
+
+    monkeypatch.setattr(hf, "time", _NoSleep())
+    monkeypatch.setattr(hf, "last_stored_date", lambda **kw: dt.date(2026, 9, 26))
+
+    calls = {"n": 0}
+
+    def fake_window(ws, we, draw_type="All", delay=0.0):
+        calls["n"] += 1
+        n = 3 if calls["n"] == 1 else 5
+        return [{"id": f"2026{i:03d}A"} for i in range(1, n + 1)], "ok"
+
+    monkeypatch.setattr(hf, "_fetch_window", fake_window)
+
+    stats = hf.fetch_since_last(tmp_path / "raw", draw_type="All", delay=0,
+                                today=dt.date(2026, 10, 7))
+    assert stats.get("error") is None
+    assert stats["draws"] == 5, "重試後要採用完整嗰份（5 期）"
+    assert calls["n"] == 2, "只重試一次"
+
+
+def test_fetch_window_min_empty_retries_once(monkeypatch):
+    """R3-2：最小窗口返 200+空（實測：限流時唔會 429、靜默返空）→ 重試一次先斷言
+    「真實缺口」。"""
+
+    class _NoSleep:
+        def sleep(self, s):
+            pass
+
+    monkeypatch.setattr(hf, "time", _NoSleep())
+
+    calls = []
+
+    def fake_range(ws, we, draw_type="All", delay=0.0):
+        calls.append(1)
+        return ([{"id": "X1"}], "ok") if len(calls) == 2 else ([], "empty")
+
+    monkeypatch.setattr(hf, "fetch_draws_range", fake_range)
+
+    d, s = hf._fetch_window(dt.date(2026, 9, 26), dt.date(2026, 10, 5), "All", 0.0)
+    assert s == "ok" and d == [{"id": "X1"}], "重試返到資料 → ok"
+    assert len(calls) == 2
+
+
+def test_fetch_window_min_empty_still_gap_after_retry(monkeypatch):
+    """R3-2：重試後仍然空 → 先斷言真實缺口（gap），唔係 error。"""
+
+    class _NoSleep:
+        def sleep(self, s):
+            pass
+
+    monkeypatch.setattr(hf, "time", _NoSleep())
+    calls = []
+
+    def fake_range(ws, we, draw_type="All", delay=0.0):
+        calls.append(1)
+        return [], "empty"
+
+    monkeypatch.setattr(hf, "fetch_draws_range", fake_range)
+
+    d, s = hf._fetch_window(dt.date(2026, 9, 26), dt.date(2026, 10, 5), "All", 0.0)
+    assert s == "gap" and d == []
+    assert len(calls) == 2

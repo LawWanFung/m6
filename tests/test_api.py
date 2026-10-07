@@ -177,3 +177,22 @@ def test_fetch_single_flight(client, monkeypatch):
     finally:
         if app_main._fetch_lock.locked():
             app_main._fetch_lock.release()
+
+
+def test_fetch_task_output_includes_stderr(client, monkeypatch):
+    """R3-3：子程序 crash 嘅 traceback 喺 stderr —— 任務 output 一定要見到
+    （舊版只收 stdout → UI 只見到「前半段 + 離奇 exit 1」，完全無法診斷）。"""
+    monkeypatch.setenv("FETCH_TOKEN", "t")
+    monkeypatch.setattr(app_main.subprocess, "run", _fake_run_fail)
+
+    r = client.post("/api/fetch", headers={"X-Fetch-Token": "t"})
+    task_id = r.json()["task_id"]
+    st = {}
+    for _ in range(100):
+        st = client.get("/api/fetch_status", params={"task_id": task_id}).json()
+        if st.get("status") in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert st["status"] == "error"
+    assert any("[stderr]" in line for line in st.get("output", [])), \
+        "stderr 要入 output 先診斷得到"

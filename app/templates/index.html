@@ -21,6 +21,7 @@
     button { background:var(--accent); color:#fff; border:0; padding:9px 16px; border-radius:8px; cursor:pointer; font-size:14px; }
     button:hover { opacity:.9; }
     input[type=number] { padding:8px 10px; border-radius:8px; border:1px solid #2a3158; background:#12162b; color:var(--txt); width:80px; }
+    input[type=password] { padding:8px 10px; border-radius:8px; border:1px solid #2a3158; background:#12162b; color:var(--txt); width:200px; }
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; margin-bottom:20px; }
     .card { background:var(--card); border:1px solid #262c4d; border-radius:12px; padding:18px; }
     .card h3 { margin:0 0 12px; font-size:14px; color:var(--muted); font-weight:600; }
@@ -63,7 +64,7 @@
     <button id="fetchBtn">🔄 抓取最新 HKJC 數據</button>
     <label class="muted" title="必須同後端 env FETCH_TOKEN 一致；會存在你瀏覽器本地（localStorage）">
       抓取 Token
-      <input id="fetchToken" type="password" placeholder="（後端有設 FETCH_TOKEN 時必填）" autocomplete="off" style="width:220px">
+      <input id="fetchToken" type="password" placeholder="（後端有設 FETCH_TOKEN 時必填）" autocomplete="off">
     </label>
     <label class="muted">滯後期數 lookback
       <input id="lookback" type="number" value="10" min="1" max="60">
