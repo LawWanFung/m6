@@ -3,7 +3,7 @@
 ============================
 
 因為本環境封鎖 HKJC 官方網站，本檔案生成一份「合成」樣本，方便本地測試
-分析 / 模型流程。實際落地時，请用 hkjc_fetch.py 抓真實數據後覆寫此檔。
+分析 / 模型流程。實際落地時，請用 hkjc_fetch.py 抓真實數據後覆寫此檔。
 
 特性：
   * 500 期，每期 6 個不重複號碼 (1-49) + 1 個特別號 (1-49, 可與主號重疊)
@@ -16,10 +16,13 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import random
+import sys
 from pathlib import Path
 
-sys = __import__("sys")
-sys.stdout.reconfigure(encoding="utf-8")
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:  # noqa: BLE001 - 有些 stdout 不可 reconfigure
+    pass
 
 SEED = 20240520
 N = 500

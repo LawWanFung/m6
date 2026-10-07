@@ -58,6 +58,10 @@ python src/hkjc_fetch.py --last-n 50
 
 # 整合成主表（讀光所有 raw JSON，按 draw_id 去重排序；可重覆執行）
 python src/build_history.py --mode build
+
+# 一鍵流程
+python run_all.py --real                # 增量：上次日期→今日 + 整合（預設）
+python run_all.py --real --full         # 完整：1993 起重抓
 ```
 
 ### 3. 增量更新（每期開獎之後跑一次）
@@ -93,11 +97,11 @@ python analyze/frequency.py
 | `GET /api/model` | 單模型（MLP）結果 JSON（向後相容） |
 | `GET /api/models?lookback=N` | **所有預測模型的結果比較**（含均勻基線）+ 分析數據 |
 | `POST /api/run?lookback=N` | 重新執行分析 + 單模型建模 |
-| `POST /api/fetch` | 背景抓取：由「上次數據日期」抓到今日，再整合成主表（回 `task_id` 輪詢） |
+| `POST /api/fetch` | 背景抓取：由「上次數據日期」抓到今日，再整合成主表（回 `task_id` 輪詢）。**需要 token**（`X-Fetch-Token` header 或 `?token=`）；**未設 `FETCH_TOKEN` env 時一律回 503（端點停用）**，防止公開部署忘設 token 被任意觸發 |
 | `GET /api/fetch_status?task_id=…` | 抓取進度（`fetching` / `success` / `error`） |
 | `GET /api/health` | 健康檢查 + **數據來源資訊**（期數、日期範圍） |
 
-### ⚠️ 數據來源保證（唔准用 demo 數據）
+### ⚠️ 數據來源保證（唔準用 demo 數據）
 
 分析／建模／儀表板**只會用真實 HKJC 數據** `data/mark6_history.csv`：
 
@@ -151,8 +155,16 @@ services:
 3. 為 `mark6` 這個 service 指定域名
 4. Dokploy 會把該域名路由到 `mark6:${PORT}`（預設 8000）
 
-> `docker-compose.yml` 同 `.env`（`PORT=8000`）一齊放 repo root，
+> `docker-compose.yml` 同 `.env`（`PORT=8000`，無密匙）一齊放 repo root，
 > docker-compose 會自動用 `.env` 做變數替換。
+
+> 🔑 **部署前必須喺 Dokploy「Environment Variables」設 `FETCH_TOKEN`**（隨機長字串）。
+> 未設時 `/api/fetch` 一律回 **503**（安全預設：寧停用，唔開成公開觸發點）；
+> Web 按鈕會提示。讀取端點（`/api/*` GET）唔需要 token。
+
+> 🐳 容器以**非 root**（`app`）用戶運行。若你嘅 volume 係舊版（root 擁有）建嘅，
+> 首次啟動會報權限錯 → 刪掉舊 volume 重建（`docker volume rm mark6_mark6_app_data`，
+> 先備份 `data/mark6_history.csv`）。
 
 ### 為什麼 `/` 直接返回 HTML 而非用 Jinja 伺服器端渲染？
 此環境的 Starlette 1.2.x 與 Jinja2 3.1.x 在模板快取上有版本相容問題，
@@ -164,7 +176,7 @@ services:
 | 檔案 | 用途 |
 |------|------|
 | `src/hkjc_fetch.py` | 官方 GraphQL API 抓取：完整歷史（日期範圍分段）或增量 `--since-last`；`normalize()` 轉主表欄位 |
-| `src/build_history.py` | 合併所有 JSON → 主表 CSV（按 `draw_id` 去重），支援增量追加 |
+| `src/build_history.py` | 合併所有 JSON → 主表 CSV（按 `draw_id` 去重）；增量更新（讀全檔 → 合併 → 日期排序重寫） |
 | `analyze/frequency.py` | 號碼頻率、卡方檢驗（是否均勻/公平）、冷熱號、奇偶/大小比 |
 | `model/base.py` | 共用特徵工程（`parse_numbers`、`multiclass_samples`）與模型基底介面 |
 | `model/ml_models.py` | sklearn 系列：邏輯回歸、隨機森林、高斯貝葉斯、MLP（共用評估骨架） |
@@ -189,7 +201,7 @@ services:
 | 均勻基線 Uniform | baseline | 理論參考線（log-loss = ln 49） | — |
 | 邏輯回歸 Logistic | sklearn | 線性權重組合 | 歷史頻率與下期無線性關係 |
 | 神經網絡 MLP | 深度學習 | 多層感知機非線性映射 | 無信號可學，過度擬合噪聲 |
-| 隨機森林 Random Forest | sklearn | 多棵决策樹集成 | 樹只能記憶歷史，泛化至零 |
+| 隨機森林 Random Forest | sklearn | 多棵決策樹集成 | 樹只能記憶歷史，泛化至零 |
 | 高斯樸素貝葉斯 | sklearn | 常態假設 + 貝葉斯後驗 | 獨立假設與實際不符，且無信號 |
 | 頻率法 熱號 Frequency | 統計 | 長週期熱號（賭徒謬誤） | 每期均等，熱號無預測力 |
 | 馬爾可夫鏈 趨勢 Markov | 統計 | 每號碼存在／不存在轉移 | 轉移機率趨向常態，無預測力 |

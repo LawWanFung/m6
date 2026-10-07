@@ -19,7 +19,10 @@ import json
 import sys
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8")
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:  # noqa: BLE001 - 有些 stdout 不可 reconfigure（例如被替換的 StringIO）
+    pass
 
 import numpy as np
 import pandas as pd
@@ -72,13 +75,53 @@ def load(path: Path | None = None, allow_sample: bool = False) -> pd.DataFrame:
         else:
             raise ValueError(f"數據檔為空：{target}")
 
-    df["numbers"] = df["numbers"].apply(lambda x: [int(v) for v in str(x).split(",") if v.strip()])
-    df["extra_ball"] = pd.to_numeric(df["extra_ball"], errors="coerce")
-    df["date"] = pd.to_datetime(df["date"], format="%d/%m/%Y", errors="coerce")
+    df = _clean_rows(df)
 
     # 記下來源，方便 API / UI 顯示（並確保 demo 數據唔會被當成真實數據）
     df.attrs["data_source"] = source
     df.attrs["data_path"] = str(target)
+    return df
+
+
+def _parse_numbers_row(value) -> list[int]:
+    """解析 `numbers` 欄；壞行回空列表（唔崩）。"""
+    s = str(value).strip().strip("[]")
+    if not s or s.lower() == "nan":
+        return []
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) != 6 or not all(p.isdigit() for p in parts):
+        return []
+    return sorted(int(p) for p in parts)
+
+
+def _parse_dates(series: pd.Series) -> pd.Series:
+    """支持 DD/MM/YYYY 同 ISO YYYY-MM-DD；唔能靜默變 NaT 而不報告。"""
+    txt = series.astype(str).str.strip()
+    out = pd.to_datetime(txt, format="%d/%m/%Y", errors="coerce")
+    iso = txt.str.match(r"^\d{4}-\d{2}-\d{2}$")
+    if iso.any():
+        out[iso] = pd.to_datetime(txt[iso], format="%Y-%m-%d", errors="coerce")
+    return out
+
+
+def _clean_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """解析號碼／日期，並丟棄「非開獎」嘅行（例如 Pending / 空號碼）。"""
+    df = df.copy()
+    df["numbers"] = df["numbers"].apply(_parse_numbers_row)
+    bad_mask = df["numbers"].map(len) != 6
+    dropped = int(bad_mask.sum())
+    if dropped:
+        print(f"[!] 跳過 {dropped} 行號碼損壞／未開獎嘅行（唔計入統計）")
+        df = df[~bad_mask].copy()
+
+    df["extra_ball"] = pd.to_numeric(df["extra_ball"], errors="coerce")
+    df["date"] = _parse_dates(df["date"])
+    bad_dates = int(df["date"].isna().sum())
+    if bad_dates:
+        print(f"[!] {bad_dates} 行日期無法解析（date = NaT）；卡方分時代檢驗會忽略呢啲行")
+
+    df.attrs["dropped_rows"] = dropped
+    df.attrs["bad_dates"] = bad_dates
     return df
 
 
@@ -115,18 +158,29 @@ def eligibility_stats(df: pd.DataFrame) -> dict:
 
     每個號碼只計入其有資格（date >= 資格起始日）嘅期數，
     rate = 出現次數 / 符合資格期數（正規化後嘅『率』）。
+
+    向量化：先建 (N, 6) int32 矩陣，每個號碼只做一次布爾索引求和，
+    取代 49×N 嘅 Python 雙迴圈（全量數據下快一個數量級）。
     """
     dates = df["date"]
+    try:
+        all_nums = np.array([list(map(int, nums)) for nums in df["numbers"]],
+                            dtype=np.int32)
+        if all_nums.ndim != 2 or all_nums.shape[1] != 6:
+            all_nums = None
+    except (TypeError, ValueError):  # 不規則行（load 正規化後唔應出現）→ 跌回逐行迴圈
+        all_nums = None
     stats_ = {}
     for n in range(1, 50):
-        start = _ELIGIBILITY_START[n]
-        mask = dates >= start
+        mask = (dates >= _ELIGIBILITY_START[n]).to_numpy()
         eligible = int(mask.sum())
         if eligible == 0:
             stats_[n] = {"count": 0, "eligible_draws": 0, "rate": 0.0}
             continue
-        counts = df.loc[mask, "numbers"]
-        count = int(sum(sum(1 for x in nums if x == n) for nums in counts))
+        if all_nums is not None:
+            count = int((all_nums[mask] == n).sum())
+        else:
+            count = int(sum(sum(1 for x in nums if x == n) for nums in df.loc[mask, "numbers"]))
         stats_[n] = {"count": count, "eligible_draws": eligible, "rate": count / eligible}
     return stats_
 
@@ -134,7 +188,7 @@ def eligibility_stats(df: pd.DataFrame) -> dict:
 def frequency_analysis(df: pd.DataFrame) -> dict:
     """主號 1-49 與特別號頻率。
 
-    除咗 raw count（main_freq / extra_freq），额外提供：
+    除咗 raw count（main_freq / extra_freq），額外提供：
       - main_rate：按資格窗口正規化之後嘅『率』（每期出現機率）
       - eligibility：每個號碼嘅 count / eligible_draws / rate
     """
@@ -149,9 +203,12 @@ def frequency_analysis(df: pd.DataFrame) -> dict:
     main_rate = pd.Series({n: elig[n]["rate"] for n in range(1, 50)})
 
     return {
+        # ⚠️ main_count 係「總球數」（每期 6 球），唔係「號碼值總和」。
+        # main_expected = 均勻分佈下每個號碼的期望出現次數 = main_count / 49。
+        # 舊版本用 main_series.sum()/49（號碼值總和／49），那係毫無意義的數字。
         "n_numbers": int(main_series.count()),
-        "main_count": int(main_series.sum()),
-        "main_expected": int(main_series.sum() / 49),
+        "main_count": int(main_series.count()),
+        "main_expected": round(float(main_series.count()) / 49, 2),
         "main_freq": main_freq,
         "extra_freq": extra_freq,
         "main_rate": main_rate,
@@ -168,23 +225,30 @@ def chi_square_uniform(freq: pd.Series, label: str, total: int):
     observed = freq.values.astype(float)
     n = len(observed)
     expected = np.full(n, total / n)
-    # 去除 expected 為 0 的項以避免警告
+    # 只檢驗「有期望值」的類別；被剔除的類別唔屬於自由度
     mask = expected > 0
+    k = int(mask.sum())
+    if k < 2:
+        return {"label": label, "chi2": None, "p_value": None, "dof": None,
+                "max_dev": None, "n_categories": k, "significant_05": False}
     chi2, p = stats.chisquare(f_obs=observed[mask], f_exp=expected[mask])
-    dof = n - 1
+    # ⚠️ 自由度 = 參與檢驗的類別數 - 1，唔係 pool 大小 - 1。
+    # 舊版本 dof = n - 1（pool 大小）會高估自由度 → p_value 唔可信。
+    dof = k - 1
     res = {
         "label": label,
         "chi2": float(chi2),
         "p_value": float(p),
         "dof": int(dof),
-        "max_dev": float(np.max(np.abs(observed - expected))),
+        "max_dev": float(np.max(np.abs(observed[mask] - expected[mask]))),
+        "n_categories": k,
     }
     res["significant_05"] = bool(p < 0.05)
     return res
 
 
 def _era_main_chi(df_era: pd.DataFrame, pool: int, label: str) -> dict:
-    """某個時代主號的卡方检验（pool 固定，才有意義）。"""
+    """某個時代主號的卡方檢驗（pool 固定，才有意義）。"""
     main_counts = pd.Series(
         [n for nums in df_era["numbers"] for n in nums]
     ).value_counts().reindex(range(1, pool + 1)).fillna(0)
@@ -193,7 +257,7 @@ def _era_main_chi(df_era: pd.DataFrame, pool: int, label: str) -> dict:
 
 
 def _era_extra_chi(df_era: pd.DataFrame, pool: int, label: str) -> dict:
-    """某個時代特別號的卡方检验。"""
+    """某個時代特別號的卡方檢驗。"""
     extra_counts = pd.Series(df_era["extra_ball"].dropna()).value_counts().reindex(
         range(1, pool + 1)
     ).fillna(0)
@@ -202,10 +266,10 @@ def _era_extra_chi(df_era: pd.DataFrame, pool: int, label: str) -> dict:
 
 
 def chi_square_era(df: pd.DataFrame) -> list:
-    """分時代检验均匀性。
+    """分時代檢驗均勻性。
 
-    全歷史把所有 49 個號碼放一齊測，會因「後加號碼」出现较少而产生
-    假性「不均勻」。拆成三代各測各代嘅 pool（45 / 47 / 49），先有意义。
+    全歷史把所有 49 個號碼放一齊測，會因「後加號碼」出現較少而產生
+    假性「不均勻」。拆成三代各測各代嘅 pool（45 / 47 / 49），先有意義。
     """
     results = []
     for era_name, start, end, pool in ERAS:
@@ -260,22 +324,69 @@ def descriptive_stats(df: pd.DataFrame) -> dict:
         consecutive.append(cons)
 
     return {
-        "odd_even_mean": float(np.mean(even_counts)),  # 平均每個開獎日的大號(偶)個數
-        "big_small_mean": float(np.mean(big_counts)),
+        # 平均每個開獎日的「偶數號個數」／「大號(>=25)個數」（兩個不同的概念）
+        "even_count_mean": float(np.mean(even_counts)),
+        "big_count_mean": float(np.mean(big_counts)),
         "consecutive_mean": float(np.mean(consecutive)),
         "sum_mean": float(np.mean([sum(n) for n in df["numbers"]])),
         "sum_std": float(np.std([sum(n) for n in df["numbers"]])),
     }
 
 
-def run(df: pd.DataFrame) -> dict:
-    """接收已載入的 DataFrame，執行分析並寫入 results/。"""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+def _write_analysis(out: dict) -> bool:
+    """寫 analyze/results/analysis.json；**只在內容變動時**寫。
+
+    避免「每次都寫」把檔案 mtime 不停推前 —— mtime 係 /api/* 緩存嘅 key，
+    內容唔變就唔該唔寫（減少磁碟寫 + 緩存無端失效）。
+    回傳 True = 有寫入，False = 內容未變（唔寫）。
+    """
+    path = RESULTS_DIR / "analysis.json"
+    try:
+        text = json.dumps(out, ensure_ascii=False, indent=2, default=str)
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            return False
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            f.write(text)
+        return True
+    except OSError as e:
+        print(f"  [!] 無法寫入 {path.name}: {e}", file=sys.stderr)
+        return False
+
+
+def run(df: pd.DataFrame, write_results: bool = True) -> dict:
+    """接收已載入的 DataFrame，執行分析；`write_results=False` 時唔寫 results 文件。
+
+    ⚠️ Web 端點調用時傳 `write_results=False`：GET 請求唔應該重寫 repo 裡的
+    analyze/results/analysis.json（併發請求會互相寫／競爭）。
+    """
 
     source = df.attrs.get("data_source", "unknown")
     path = df.attrs.get("data_path", "")
     if source == "sample":
         print("[!] 注意：今次分析用嘅係合成樣本，唔係真實 HKJC 數據！")
+
+    if len(df) == 0:
+        out = {
+            "n_draws": 0,
+            "data_source": source,
+            "data_path": path,
+            "date_range": {"first": None, "last": None},
+            "eligibility_windows": eligibility_windows(),
+            "main_chi2": _empty_chi(),
+            "extra_chi2": _empty_chi(),
+            "era_chi2": [],
+            "cold_hot": {"hot": {}, "cold": {}},
+            "descriptive": {},
+            "main_freq": {},
+            "main_rate": {},
+            "extra_freq": {},
+            "error": "數據為空或所有行都無法解析",
+        }
+        if write_results:
+            _write_analysis(out)
+        print("[!] 無可用數據（分析結果為空）")
+        return out
 
     freq = frequency_analysis(df)
     era_results = chi_square_era(df)
@@ -289,6 +400,8 @@ def run(df: pd.DataFrame) -> dict:
         "n_draws": int(len(df)),
         "data_source": source,          # "real" = 真實 HKJC 數據；"sample" = 合成樣本
         "data_path": path,
+        "dropped_rows": int(df.attrs.get("dropped_rows", 0)),
+        "bad_dates": int(df.attrs.get("bad_dates", 0)),
         "date_range": {
             "first": str(df["date"].min().date()) if df["date"].notna().any() else None,
             "last": str(df["date"].max().date()) if df["date"].notna().any() else None,
@@ -303,23 +416,26 @@ def run(df: pd.DataFrame) -> dict:
         "main_rate": {int(k): round(float(v), 4) for k, v in freq["main_rate"].items()},
         "extra_freq": {int(k): int(v) for k, v in freq["extra_freq"].items()},
     }
-    with (RESULTS_DIR / "analysis.json").open("w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2, default=str)
-
     # 列印摘要
     print(f"數據期數: {out['n_draws']}（來源: {source} · {path}）")
     if out["date_range"]["first"]:
         print(f"日期範圍: {out['date_range']['first']} ~ {out['date_range']['last']}")
     if era_results:
+        def _fmt(v):
+            return "n/a" if v is None else f"{v:.4f}"
         for e in era_results:
-            mc = e["main_chi2"]
-            print(f"  {e['era']}（pool {e['pool']}）主號 χ² p={mc['p_value']:.4f} "
-                  f"(显著0.05:{mc['significant_05']}) · 特別號 p={e['extra_chi2']['p_value']:.4f}")
+            mc, xc = e["main_chi2"], e["extra_chi2"]
+            print(f"  {e['era']}（pool {e['pool']}）主號 χ² p={_fmt(mc['p_value'])} "
+                  f"(顯著0.05:{mc['significant_05']}) · 特別號 p={_fmt(xc['p_value'])}")
     else:
         print("主號 卡方: 無數據")
     print(f"熱號(率): { {str(k): v for k, v in ch['hot'].items()} }")
     print(f"冷號(率): { {str(k): v for k, v in ch['cold'].items()} }")
-    print(f"結果已存至 {RESULTS_DIR / 'analysis.json'}")
+    if write_results:
+        if _write_analysis(out):
+            print(f"結果已存至 {RESULTS_DIR / 'analysis.json'}")
+        else:
+            print("分析結果未變動（唔重寫 analysis.json）")
     return out
 
 

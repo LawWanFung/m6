@@ -21,3 +21,17 @@ analyze/results/*.json
 .vscode/
 *.md
 .dockerignore
+
+# HKJC 前端 bundle（3.5MB 第三方資產，只作 API 研究參考；唔需要入 image）
+main.js
+
+# 測試（唔需要打包入 image）
+tests/
+
+# 本地草稿（GraphQL 調試用）
+q.json
+
+# 部署文件（唔需要入 image；docker-entrypoint.sh 除外 —— Dockerfile 要 COPY 佢）
+.env
+.env.example
+docker-compose.yml

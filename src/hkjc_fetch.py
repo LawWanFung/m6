@@ -260,17 +260,36 @@ def _decode_body(resp: requests.Response) -> bytes:
     return raw
 
 
-def _post_graphql(payload: dict, timeout: int = DEFAULT_TIMEOUT):
+_http_session: "requests.Session | None" = None
+
+
+def _session() -> requests.Session:
+    """全程序重用一個 `requests.Session`（連接池 + keep-alive）。
+
+    完整歷史抓取約 132 個窗口；每個窗口新建連接就是 132 次 TLS 握手。
+    重用 session 後連續窗口走同一條 keep-alive 連接，顯著慳時間。
+    """
+    global _http_session
+    if _http_session is None:
+        _http_session = requests.Session()
+    return _http_session
+
+
+def _post_graphql(payload: dict, timeout: int = DEFAULT_TIMEOUT) -> tuple[list[dict], str]:
     """POST GraphQL，處理 gzip、重試、GraphQL errors。
 
-    回傳：
-      * `list`  — 成功（可能係空陣列，代表該條件冇資料）
-      * `None`  — 請求失敗（網絡／HTTP／GraphQL error）
+    回傳 `(draws, status)`：
+      * `("ok", [...])`  — 成功且有資料
+      * `("empty", [])`  — 成功，但該條件確實冇資料（真實缺口）
+      * `("error", [])`  — 請求失敗（網絡／HTTP／GraphQL error）
+
+    ⚠️ 「冇資料」同「撏數失敗」必須分清。把失敗當成「冇資料」會寫入空快取，
+       令該窗口永遠不再重抓（永久缺口），而上層會誤報「抓取成功」。
     """
     last_err: str = ""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.post(
+            resp = _session().post(
                 GRAPHQL_URL,
                 headers=HEADERS,
                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -290,6 +309,17 @@ def _post_graphql(payload: dict, timeout: int = DEFAULT_TIMEOUT):
             time.sleep(1.5 * attempt)
             continue
 
+        if resp.status_code == 429:
+            # ⚠️ 429 = 被限流，係 HKJC API 嘅正常瞬態，唔係終態。
+            # 舊版落到下面 `!= 200` 分支直接回 error → 一個 429 令整次抓取失敗。
+            # 退避重試（同 5xx 一樣）；重試盡先先當失敗。
+            print(
+                f"  [!] HTTP 429（被限流，第 {attempt}/{MAX_RETRIES} 次，退避重試）",
+                file=sys.stderr,
+            )
+            time.sleep(1.5 * attempt)
+            continue
+
         if resp.status_code == 400:
             # 例：drawType 值錯 -> "Your input doesn't match the data type."
             print(
@@ -297,31 +327,31 @@ def _post_graphql(payload: dict, timeout: int = DEFAULT_TIMEOUT):
                 f"{body_bytes.decode('utf-8', 'replace')[:160]}",
                 file=sys.stderr,
             )
-            return None
+            return [], "error"
 
         if resp.status_code != 200:
             print(f"  [!] HTTP {resp.status_code}，放棄。", file=sys.stderr)
-            return None
+            return [], "error"
 
         try:
             body = json.loads(body_bytes.decode("utf-8", errors="replace"))
         except ValueError:
             print(f"  [!] 非 JSON 回應（{len(resp.content)} bytes）", file=sys.stderr)
-            return None
+            return [], "error"
 
         if body.get("errors"):
             print(f"  [!] GraphQL errors: {body['errors']}", file=sys.stderr)
             # WHITELIST_ERROR 代表 query 被改動，重試無意義
-            return None
+            return [], "error"
 
         draws = (body.get("data") or {}).get("lotteryDraws") or []
         if not isinstance(draws, list):
             print("  [!] 回應結構異常：lotteryDraws 不是陣列", file=sys.stderr)
-            return None
-        return draws
+            return [], "error"
+        return draws, ("ok" if draws else "empty")
 
     print(f"  [!] 重試 {MAX_RETRIES} 次仍失敗：{last_err}", file=sys.stderr)
-    return None
+    return [], "error"
 
 
 # ---------------------------------------------------------------- 抓取
@@ -331,16 +361,16 @@ def fetch_draws(
     last_n: int = DEFAULT_LAST_N_DRAW,
     draw_type: str = "All",
     delay: float = DEFAULT_DELAY,
-) -> list[dict]:
+) -> tuple[list[dict], str]:
     """`lastNDraw` 模式：抓最近 last_n 期（raw 記錄，最新排最前）。
 
     ⚠️ 實測 >58 會靜默截斷；此模式回傳嘅組合可能唔連續（要完整連續資料請用
-    `fetch_draws_range`）。失敗回 `[]`。
+    `fetch_draws_range`）。回傳 `(draws, status)`，status = ok / empty / error。
     """
-    draws = _post_graphql(build_payload(last_n=last_n, draw_type=draw_type))
+    draws, status = _post_graphql(build_payload(last_n=last_n, draw_type=draw_type))
     if delay:
         time.sleep(delay)
-    return draws or []
+    return draws, status
 
 
 def fetch_draws_range(
@@ -352,13 +382,14 @@ def fetch_draws_range(
     """日期範圍模式（**完整且連續**）：`YYYYMMDD` 無 dash。
 
     窗口必須 ≤ 約 3 個月；超過會靜默回空陣列（呼叫方需自行處理）。
+    回傳 `(draws, status)`，status = ok / empty / error。
     """
-    draws = _post_graphql(
+    draws, status = _post_graphql(
         build_payload(start_date=start, end_date=end, draw_type=draw_type)
     )
     if delay:
         time.sleep(delay)
-    return draws or []
+    return draws, status
 
 
 def _fetch_window(
@@ -387,11 +418,14 @@ def _fetch_window(
             return [], "gap"
         return left + right, "ok"
 
-    draws = fetch_draws_range(ws, we, draw_type=draw_type, delay=delay)
+    draws, status = fetch_draws_range(ws, we, draw_type=draw_type, delay=delay)
+    if status == "error":
+        return [], "error"
     if draws:
         return draws, "ok"
 
-    # 空：可能係 (a) 窗口過大 (b) 真實缺口。用二分法分辨。
+    # 空（HTTP 200 + 冇 error）：可能係 (a) 窗口過大被靜默截斷 (b) 真實缺口。
+    # 用二分法分辨。
     if (we - ws).days <= MIN_WINDOW_DAYS:
         return [], "gap"
 
@@ -491,10 +525,15 @@ def fetch_normalized(
     draw_type: str = "All",
     delay: float = DEFAULT_DELAY,
 ) -> list[dict]:
-    """抓最近 N 期 + 過濾已開獎 + 正規化，按 (year, no) 升序。"""
-    recs = [normalize(d) for d in fetch_draws(last_n, draw_type, delay) if is_result(d) and d.get("id")]
+    """抓最近 N 期 + 過濾已開獎 + 正規化，按 (year, no) 升序。
+
+    回傳 `(recs, status)`；status 為 error 時 recs 係空，呼叫方唔得把它當成
+    「該區間冇開獎紀錄」。
+    """
+    raw, status = fetch_draws(last_n, draw_type, delay)
+    recs = [normalize(d) for d in raw if is_result(d) and d.get("id")]
     recs.sort(key=lambda r: (str(r.get("year") or ""), r.get("no") or 0))
-    return recs
+    return recs, status
 
 
 # ---------------------------------------------------------------- 寫檔
@@ -594,7 +633,7 @@ def fetch_since_last(
             "[GraphQL] 主表／raw 快取都冇資料 → 由 1993 開始做完整歷史抓取"
             "（約 3-4 分鐘，分段寫入、可中斷續傳）。"
         )
-        draws = fetch_history(
+        draws, errors = fetch_history(
             EARLIEST_DATE, today, out_dir, draw_type=draw_type, delay=delay
         )
         return {
@@ -604,6 +643,8 @@ def fetch_since_last(
             "windows": len(list(_iter_date_range(EARLIEST_DATE, today))),
             "draws": draws,
             "incremental": False,
+            "error": bool(errors),
+            "failed_windows": errors,
         }
 
     start = min(last, today)
@@ -614,20 +655,29 @@ def fetch_since_last(
     )
 
     collected: list[dict] = []
+    failed: list[str] = []
     for i, (ws, we) in enumerate(windows, 1):
         draws, status = _fetch_window(ws, we, draw_type=draw_type, delay=delay)
         if status == "error":
-            print(f"  [!] 窗口 {ws} ~ {we} 請求失敗。", file=sys.stderr)
-            if not collected:
-                return {
-                    "last_stored": last.isoformat(), "start": start.isoformat(),
-                    "end": today.isoformat(), "windows": len(windows),
-                    "draws": 0, "incremental": True, "error": True,
-                }
-            break
-        label = "  （此區間無攪珠）" if status == "gap" else ""
+            failed.append(f"{ws} ~ {we}")
+            print(f"  [!] 窗口 {ws} ~ {we} 請求失敗（唔係「冇數據」）。", file=sys.stderr)
+            continue
+        label = "  （此區間無攪珠記錄）" if status == "gap" else ""
         print(f"  [{i}/{len(windows)}] {ws} ~ {we}: {len(draws):>3} 筆{label}")
         collected.extend(draws)
+
+    if failed:
+        # 請求失敗 ≠ 該區間冇數據。唔覆寫 last_all.json，下次執行會重抓失敗窗口。
+        print(
+            f"  [!] {len(failed)} 個窗口請求失敗；保留舊快取，下次執行會重試。",
+            file=sys.stderr,
+        )
+        return {
+            "last_stored": last.isoformat(), "start": start.isoformat(),
+            "end": today.isoformat(), "windows": len(windows),
+            "draws": 0, "incremental": True, "error": True,
+            "failed_windows": failed,
+        }
 
     # 去重（同一期可能因重疊而重覆）
     uniq: dict[str, dict] = {}
@@ -655,16 +705,28 @@ def fetch_since_last(
 
 def fetch_last_n(
     last_n: int = DEFAULT_LAST_N_DRAW,
-    out_dir: Path = Path("data/raw"),
+    out_dir: Path | None = None,
     draw_type: str = "All",
     delay: float = DEFAULT_DELAY,
 ) -> int:
-    """`lastNDraw` 模式：抓最近 last_n 期，raw 記錄寫入 `last_all.json`。"""
+    """`lastNDraw` 模式：抓最近 last_n 期，raw 記錄寫入 `last_all.json`。
+
+    回傳：寫入筆數；`-1` 代表請求失敗。失敗或空回應都不覆寫快取，
+    以免摧毀已累積嘅 raw 快取（主表整合需要佢）。
+    """
+    out_dir = Path(out_dir) if out_dir else RAW_DIR
     n = clamp_last_n(last_n)
     print(f"[GraphQL] 抓取最近 {n} 期（drawType={normalize_draw_type(draw_type)}）...")
-    draws = fetch_draws(n, draw_type=draw_type, delay=delay)
+    draws, status = fetch_draws(n, draw_type=draw_type, delay=delay)
+    if status == "error":
+        print(
+            "  [!] 抓取失敗（網絡／API 問題，唔係「該區間冇數據」）。"
+            "唔覆寫 last_all.json，下次執行會重試。",
+            file=sys.stderr,
+        )
+        return -1
     if not draws:
-        print("  [!] 冇取得任何資料。", file=sys.stderr)
+        print("  [i] 該查詢冇返回任何資料；唔覆寫 last_all.json（舊快取仍然有效）。")
         return 0
 
     seg = _write_segment(Path(out_dir), "last_all.json", draws)
@@ -684,21 +746,29 @@ def fetch_latest(
     days: int = 60,
     draw_type: str = DRAW_TYPE_ALL,
 ) -> int:
-    """增量更新：用**日期範圍**抓最近 days 日（完整連續），寫入 `last_all.json`。"""
+    """增量更新：用**日期範圍**抓最近 days 日（完整連續），寫入 `last_all.json`。
+
+    回傳筆數；`-1` 代表請求失敗。失敗或空回應都不覆寫快取（舊快取比空檔有用）。
+    """
     end = dt.date.today()
     start = end - dt.timedelta(days=days)
     print(f"[GraphQL] 增量抓取 {start} ~ {end}（drawType={normalize_draw_type(draw_type)}）...")
     draws, status = _fetch_window(start, end, draw_type=draw_type, delay=delay)
     if status == "error":
-        print("  [!] 抓取失敗。", file=sys.stderr)
+        print(
+            "  [!] 抓取失敗（網絡／API 問題，唔係「該區間冇攪珠」）。"
+            "唔覆寫 last_all.json。",
+            file=sys.stderr,
+        )
+        return -1
+    if not draws:
+        print("  [i] 該區間冇攪珠記錄（或窗口過大被靜默截斷）；唔覆寫 last_all.json。")
         return 0
 
     seg = _write_segment(Path(out_dir), "last_all.json", draws)
     results = [d for d in draws if is_result(d)]
-    print(
-        f"完成，共 {len(draws)} 筆（已開獎 {len(results)} 筆）"
-        f"{'  [注意：此區間無攪珠記錄]' if not draws else ''} -> {seg.name}"
-    )
+    # 注意：上面已有 `if not draws: return 0`，這裡 draws 必定非空，唔需要再判斷。
+    print(f"完成，共 {len(draws)} 筆（已開獎 {len(results)} 筆）-> {seg.name}")
     return len(draws)
 
 
@@ -710,13 +780,14 @@ def fetch_history(
     delay: float = DEFAULT_DELAY,
     resume: bool = True,
     force: bool = False,
-) -> int:
+) -> tuple[int, list[str]]:
     """完整歷史抓取：由 start 到 end，逐個 ≤3 個月窗口寫入 `seg_*.json`。
 
     - 使用日期範圍模式（`YYYYMMDD`），資料完整且連續（**與 lastNDraw 唔同**）
     - 窗口過大會靜默回空 → 自動二分縮窗重試
     - `resume=True`：已存在嘅 seg 檔會跳過（斷點續傳）；`force=True` 強制重抓
-    - 回傳寫入／命中嘅去重 draw_id 數目
+    - 請求失敗嘅窗口**唔寫 seg 檔**，下次執行會重抓（唔造成永久缺口）
+    - 回傳 `(唯一期數, 失敗窗口列表)`
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -726,7 +797,9 @@ def fetch_history(
         start = EARLIEST_DATE
     if end < start:
         print("  [!] 結束日期早於開始日期。", file=sys.stderr)
-        return 0
+        # 必須回 (count, errors) 元組：CLI 用 `count, errors = ...` 解包，
+        # 回傳裸 int 會令呼叫方 TypeError（舊版 `return 0` 嘅 bug）。
+        return 0, []
 
     windows = list(_iter_date_range(start, end))
     print(
@@ -736,6 +809,7 @@ def fetch_history(
 
     seen: set[str] = set()
     gaps: list[str] = []
+    errors: list[str] = []
     cached = 0
     for i, (ws, we) in enumerate(windows, 1):
         seg = out_dir / _seg_name(ws, we)
@@ -751,8 +825,12 @@ def fetch_history(
 
         draws, status = _fetch_window(ws, we, draw_type=draw_type, delay=delay)
         if status == "error":
-            print(f"  [!] 窗口 {ws} ~ {we} 請求失敗，中止（下次執行會續傳）。", file=sys.stderr)
-            break
+            errors.append(f"{ws}~{we}")
+            print(
+                f"  [!] 窗口 {ws} ~ {we} 請求失敗 — 唔寫分段檔，下次執行會重抓。",
+                file=sys.stderr,
+            )
+            continue
 
         _write_segment(out_dir, seg.name, draws)
         for d in draws:
@@ -771,7 +849,12 @@ def fetch_history(
     )
     if gaps:
         print(f"     無攪珠記錄嘅窗口 {len(gaps)} 個：" + ", ".join(gaps[:6]) + (" …" if len(gaps) > 6 else ""))
-    return len(seen)
+    if errors:
+        print(
+            f"     請求失敗嘅窗口 {len(errors)} 個（下次執行會重抓，唔係永久缺口）："
+            + ", ".join(errors[:6]) + (" …" if len(errors) > 6 else "")
+        )
+    return len(seen), errors
 
 
 # ---------------------------------------------------------------- CLI
@@ -808,21 +891,27 @@ def parse_args(argv: list[str] | None = None):
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None):
+def main(argv: list[str] | None = None) -> int:
     a = parse_args(argv)
     out_dir = Path(a.out)
+    if not out_dir.is_absolute():
+        # 唔依賴當前工作目錄：相對路徑一律以專案根（BASE_DIR）為準
+        out_dir = BASE_DIR / out_dir
 
     if a.days is not None:
         # 明確指定回溯日數
-        fetch_latest(out_dir, delay=a.delay, days=a.days, draw_type=a.draw_type)
-        return
+        return 0 if fetch_latest(out_dir, delay=a.delay, days=a.days, draw_type=a.draw_type) >= 0 else 1
 
     if a.latest or a.since_last:
         # 自動判斷「對上一次數據」係邊日，然後抓到今日
         stats = fetch_since_last(out_dir, draw_type=a.draw_type, delay=a.delay)
         if stats.get("error"):
-            print("[!] 增量抓取失敗。", file=sys.stderr)
-            return
+            print(
+                "[!] 增量抓取失敗（網絡／API 問題）— 唔係「該區間冇數據」，"
+                "主表數據可能已經過時。",
+                file=sys.stderr,
+            )
+            return 1
         if stats["incremental"]:
             print(
                 f"完成：上次數據 {stats['last_stored']} → 抓到 {stats['end']}，"
@@ -830,21 +919,21 @@ def main(argv: list[str] | None = None):
             )
         else:
             print(f"完成：完整抓取 {stats['start']} ~ {stats['end']}，共 {stats['draws']} 期。")
-        return
+        return 0
 
     if a.start or a.end:
         # 日期範圍模式 → 完整歷史（可斷點續傳）
         start = dt.date.fromisoformat(a.start) if a.start else EARLIEST_DATE
         end = dt.date.fromisoformat(a.end) if a.end else dt.date.today()
-        fetch_history(
+        count, errors = fetch_history(
             start, end, out_dir,
             draw_type=a.draw_type, delay=a.delay, force=a.force,
         )
-        return
+        return 1 if errors else 0
 
     last_n = a.last_n if a.last_n is not None else DEFAULT_LAST_N_DRAW
-    fetch_last_n(last_n=last_n, out_dir=out_dir, draw_type=a.draw_type, delay=a.delay)
+    return 0 if fetch_last_n(last_n=last_n, out_dir=out_dir, draw_type=a.draw_type, delay=a.delay) >= 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

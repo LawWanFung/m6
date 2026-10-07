@@ -1,0 +1,2 @@
+# 佔位：analyze/results/ 本身入 repo；目錄內嘅 *.json（例如 analysis.json）
+# 可重新生成，已喺 .gitignore 排除（保持 repo diff 乾淨）。

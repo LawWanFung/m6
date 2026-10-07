@@ -4,11 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>六合彩數據儀表板 · Mark Six Dashboard</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Chart.js 帶 SRI（subresource integrity）：CDN 檔案被竄改時瀏覽器拒載，
+       而不是靜默執行任意代碼。hash 對應 chart.js@4.4.1 官方 dist。 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+          integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+          crossorigin="anonymous"></script>
   <style>
     :root { --bg:#0f1220; --card:#1a1f36; --accent:#5b8def; --good:#3ec979; --warn:#e6b54a; --bad:#e45b6b; --txt:#e6e8f0; --muted:#8b90a8; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--txt); }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif; background:var(--bg); color:var(--txt); }
     header { padding:24px 28px; background:linear-gradient(90deg,#1a1f36,#232a4d); border-bottom:1px solid #2a3158; }
     header h1 { margin:0; font-size:22px; }
     header p { margin:6px 0 0; color:var(--muted); font-size:13px; }
@@ -80,8 +84,8 @@
   </div>
 
   <div class="chart-wrap">
-    <h3>🧠 多預測模型比較（log-loss 越低越好，均勻基線 = ln 49 ≈ 3.89）</h3>
-    <div class="muted" style="margin-bottom:12px">六合彩係獨立隨機事件，理論上沒有任何模型能長期勝過均勻隨機。下表所有模型都用同一個 metric（log-loss）對比，皆以均勻基線為參考線。</div>
+    <h3>🧠 多預測模型比較（log-loss 越低越好，均勻基線 = ln 49 ≈ 3.892）</h3>
+    <div class="muted" style="margin-bottom:12px">六合彩係獨立隨機事件，理論上沒有任何模型能長期勝過均勻隨機。下表所有模型都用同一個 metric（log-loss）對比，皆以均勻基線為參考線。「預測號碼」按<b>概率由高到低</b>排列（唔係開獎順序）。</div>
     <div style="background:#12162b;border:1px solid #262c4d;border-radius:10px;padding:14px">
       <canvas id="modelChart" height="280"></canvas>
     </div>
@@ -101,17 +105,30 @@ let modelChart = null;
 function fmt(v){ return (typeof v === 'object' && v !== null)
   ? Object.entries(v).map(([k,val])=>`${k}: ${Math.round(val)}`).join(' · ') : v; }
 
+// HTML escape：所有由 API 回傳的字符串入 innerHTML 前先經此（防 XSS）。
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Chart.js 可能載入失敗（CDN 被擋／離線）→ 圖表禁用，其餘統計照用。
+function makeChart(el, cfg){ return (typeof Chart === 'undefined') ? null : new Chart(el, cfg); }
+
 async function fetchData(lookback){
   const url = lookback && lookback>0
     ? `/api/models?lookback=${lookback}` : `/api/analysis`;
   const r = await fetch(url);
-  if(!r.ok) throw new Error('HTTP '+r.status);
+  if(!r.ok){
+    let msg = 'HTTP '+r.status;
+    try { const j = await r.json(); if(j && j.detail) msg += '：'+j.detail; } catch(_){}
+    throw new Error(msg);
+  }
   const d = await r.json();
   return { analysis: d.analysis ?? d, models: d.models ?? [] };
 }
 
 function render(analysis, models){
   // stats cards
+  if (typeof Chart === 'undefined') {
+    document.getElementById('status').textContent = '⚠️ Chart.js 載入失敗（CDN 被擋？）：圖表禁用，其餘統計可用';
+  }
   const stats = document.getElementById('stats');
   const chi = analysis.main_chi2 || {};
   const cc = chi.significant_05 === true || chi.significant_05 === 'True';
@@ -119,15 +136,16 @@ function render(analysis, models){
   const srcOk = analysis.data_source === 'real';
   const srcNote = srcOk
     ? `✅ 真實 HKJC 數據${dr.first? `（${dr.first} ~ ${dr.last}）`:''}`
-    : `⚠️ 非真實數據（${analysis.data_source||'unknown'}）`;
+    : `⚠️ 非真實數據（${esc(analysis.data_source||'unknown')}）`;
 
   // 分時代公平性（考慮 46–49 號歷史上場窗口，三代各測各代 pool）
   const eras = analysis.era_chi2 || [];
+  const extra = analysis.extra_chi2 || {};
   const eraRows = eras.map(e => {
     const mc = e.main_chi2 || {};
     const sig = mc.significant_05 === true || mc.significant_05 === 'True';
     return `<div style="display:flex;justify-content:space-between;gap:8px">
-      <span>${e.era} · pool ${e.pool} · ${e.n_draws}期</span>
+      <span>${esc(e.era)} · pool ${e.pool} · ${e.n_draws}期</span>
       <span class="${sig?'w':'g'}">p=${mc.p_value!=null? mc.p_value.toFixed(3):'-'}</span>
     </div>`;
   }).join('') || '<div class="muted">無資料</div>';
@@ -138,10 +156,10 @@ function render(analysis, models){
       <div class="muted" style="margin-top:6px">${srcNote}</div></div>
     <div class="card"><h3>公平性（分時代 χ²）</h3>
       <div style="display:flex;flex-direction:column;gap:4px">${eraRows}</div>
-      <div class="muted" style="margin-top:6px">以最新一代（${eraLast.era||'-'}，pool ${eraLast.pool||'-'}）為主，避免遲出號碼（46–49）產生假性偏差</div></div>
+      <div class="muted" style="margin-top:6px">以最新一代（${esc(eraLast.era||'-')}，pool ${eraLast.pool||'-'}）為主，避免遲出號碼（46–49）產生假性偏差</div></div>
     <div class="card"><h3>特別號公平性 (χ²)</h3>
-      <div class="stat">${analysis.extra_chi2.p_value!=null? analysis.extra_chi2.p_value.toFixed(3):'-'}</div>
-      <div class="muted">${(analysis.extra_chi2.significant_05==='True')?'⚠️ 有偏差':'✅ 均勻'}</div></div>
+      <div class="stat">${extra.p_value!=null? extra.p_value.toFixed(3):'-'}</div>
+      <div class="muted">${(extra.significant_05===true || extra.significant_05==='True')?'⚠️ 有偏差':'✅ 均勻'}</div></div>
     <div class="card"><h3>平均開獎總和</h3>
       <div class="stat">${(analysis.descriptive||{}).sum_mean!=null? Math.round(analysis.descriptive.sum_mean):'-'}</div>
       <div class="muted">標準差 ${(analysis.descriptive||{}).sum_std!=null? Math.round(analysis.descriptive.sum_std):'-'}</div></div>`;
@@ -152,7 +170,7 @@ function render(analysis, models){
   const data = labels.map(l => rate[l] ?? 0);
   const meanRate = data.reduce((a,b)=>a+b,0) / 49;
   if(freqChart) freqChart.destroy();
-  freqChart = new Chart(document.getElementById('freqChart'), {
+  freqChart = makeChart(document.getElementById('freqChart'), {
     type:'bar',
     data:{ labels, datasets:[{
       label:'每期出現率', data,
@@ -176,17 +194,24 @@ function render(analysis, models){
 
 function fmtLL(v){ return (v!=null && !Number.isNaN(v)) ? v.toFixed(3) : '—'; }
 
-// 將每個模型預測的 6 個號碼渲染成小 chips
+// 將每個模型預測的 6 個號碼渲染成小 chips（按**概率由高到低**排列，
+// 唔係「第1球、第2球…」嘅開獎順序）
 function predChips(pn){
   if(!pn || pn.length === 0) return '<span class="muted">—</span>';
-  return pn.map((n,i) => `<span class="chip-pred${i===0?' hi':''}" title="預測第${i+1} 號">${n}</span>`).join('');
+  return pn.map((n,i) => `<span class="chip-pred${i===0?' hi':''}" title="概率第 ${i+1} 高">${n}</span>`).join('');
 }
 
-// 一次過 show 晒所有模型的 log-loss 條圖，配基線虛線作對比
+// 一次過 show 曬所有模型的 log-loss 條圖，配基線虛線作對比
+// 基線從 API 回傳的 uniform_baseline_log_loss 取（= ln 49），唔 hardcode
+function baselineOf(models){
+  const m = (models || []).find(x => x.uniform_baseline_log_loss != null);
+  return m ? m.uniform_baseline_log_loss : Math.log(49);
+}
+
 function renderModelChart(models){
   const el = document.getElementById('modelChart');
   if(modelChart) modelChart.destroy();
-  const base = 3.8918;
+  const base = baselineOf(models);
   const arr = models || [];
   const labels = arr.map(m => m.name);
   const data = arr.map(m => m.mean_log_loss);
@@ -196,7 +221,7 @@ function renderModelChart(models){
     if(ll == null) return 'rgba(230,181,74,.65)';
     return ll < base ? '#3ec979' : '#e45b6b';
   });
-  modelChart = new Chart(el, {
+  modelChart = makeChart(el, {
     type:'bar',
     data:{ labels, datasets:[
       { label:'log-loss', data, backgroundColor: colors, borderColor: colors, borderWidth:1, barPercentage:0.7 },
@@ -207,7 +232,7 @@ function renderModelChart(models){
       indexAxis:'y',
       responsive:true,
       plugins:{ legend:{display:true, labels:{color:'#e6e8f0'}},
-        title:{display:true, text:'各模型 log-loss 比較（均勻基線 = 3.89）'} },
+        title:{display:true, text:`各模型 log-loss 比較（均勻基線 = ${base.toFixed(3)}）`} },
       scales:{
         x:{ticks:{color:'#8b90a8', callback:v=>v.toFixed(1)}, min:0, startValue:0,
            title:{display:true, text:'log-loss（越低越好）', color:'#8b90a8'}},
@@ -218,28 +243,31 @@ function renderModelChart(models){
 }
 
 function renderModelTable(models){
-  const base = Math.min(...(models||[]).map(m => m.mean_log_loss).filter(x => x!=null));
   const tbody = document.getElementById('modelBody');
   if(!models || models.length === 0){
-    tbody.innerHTML = '<tr><td colspan="6" class="muted">無資料</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">無資料</td></tr>';
     return;
   }
+  // 最佳 log-loss（全部模型都冇結果時 Math.min() 會回傳 Infinity，要 guard）
+  const losses = models.map(m => m.mean_log_loss).filter(x => x != null);
+  const best = losses.length ? Math.min(...losses) : null;
+  const base = baselineOf(models);
   tbody.innerHTML = models.map(m => {
     const ll = m.mean_log_loss;
-    const nearBase = (ll != null && Math.abs(ll - 3.8918) < 0.05);
-    const overBase = (ll != null && ll >= 3.8918);
+    const nearBase = (ll != null && Math.abs(ll - base) < 0.05);
     let verdict, vclass;
     if (m.can_predict === true) { verdict = '✅ 優於隨機（異常）'; vclass = 'g'; }
-    else if (ll == null) { verdict = '⚠️ 無結果'; vclass = 'w'; }
+    else if (ll == null) { verdict = (m.error ? '⚠️ ' + esc(m.error) : '⚠️ 無結果'); vclass = 'w'; }
     else if (nearBase) { verdict = '≈ 與隨機持平'; vclass = 'w'; }
-    else { verdict = '❌ 輸給隨機'; vclass = 'g'; }  // 輸給隨機 = 符合預期（正常）
+    else if (ll < base) { verdict = '✅ 優於隨機（異常）'; vclass = 'g'; }
+    else { verdict = '❌ 輸給隨機（符合預期）'; vclass = 'g'; }
     return `<tr>
-      <td><b>${m.name}</b></td>
-      <td><span class="mbadge k-${m.kind||'misc'}">${m.kind||'/'}</span></td>
+      <td><b>${esc(m.name)}${best != null && ll == best ? ' 🏆' : ''}</b></td>
+      <td><span class="mbadge k-${m.kind||'misc'}">${esc(m.kind||'/')}</span></td>
       <td>${predChips(m.predicted_numbers)}</td>
-      <td class="muted">${m.description || ''}</td>
+      <td class="muted">${esc(m.description || '')}</td>
       <td class="r"><b>${fmtLL(ll)}</b></td>
-      <td class="r">${ll != null ? (3.8918 - ll).toFixed(3) : '—'}</td>
+      <td class="r">${ll != null ? (base - ll).toFixed(3) : '—'}</td>
       <td class="${vclass}">${verdict}</td>
     </tr>`;
   }).join('');
@@ -266,19 +294,30 @@ async function fetchLatest(){
   status.textContent = '抓取中…';
   try {
     const r = await fetch('/api/fetch', {method:'POST'});
-    if(!r.ok) throw new Error('HTTP '+r.status);
+    if(!r.ok){
+      let msg = 'HTTP '+r.status;
+      try { const j = await r.json(); if(j && j.detail) msg += '：'+j.detail; } catch(_){}
+      throw new Error(msg);
+    }
     const { task_id } = await r.json();
 
-    // 輪詢進度
+    // 輪詢進度（有上限：避免 task 失蹤／後端失能時無限輪詢）
+    const MAX_POLLS = 200; // 200 次 × 3s ≈ 10 分鐘，足夠完整抓取
+    let polls = 0;
     while(true){
       const s = await (await fetch(`/api/fetch_status?task_id=${task_id}`)).json();
       if(s.status === 'fetching' || s.status === 'starting'){
-        status.textContent = `抓取中… ${s.progress || ''}`;
-        await new Promise(res => setTimeout(res, s.interval*1000 || 2000));
+        status.textContent = `抓取中… ${esc(s.progress || '')}`;
+        const delay = (Number.isFinite(s.interval) ? s.interval : 3) * 1000;
+        await new Promise(res => setTimeout(res, delay));
+        if(++polls >= MAX_POLLS) {
+          status.textContent = '⚠️ 輪詢超時（任務可能仍在進行，可稍後刷新）';
+          break;
+        }
       } else {
         status.textContent = s.status === 'success'
-          ? `✓ 抓取完成 @ ${new Date().toLocaleTimeString()}（${s.summary||''}）`
-          : `✗ 抓取失敗：${s.error || ''}`;
+          ? `✓ 抓取完成 @ ${new Date().toLocaleTimeString()}（${esc(s.summary||'')}）`
+          : `✗ 抓取失敗：${esc(s.error || s.status)}`;
         // 成功就刷新儀表板
         if(s.status === 'success') await run();
         break;

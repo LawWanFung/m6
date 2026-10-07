@@ -8,13 +8,16 @@
 #   1. 新增 Deployment → 類型選 "docker-compose"
 #   2. 指定本檔案所在目錄（通常即 repo root）
 #   3. 為 mark6 這個 service 指定域名
-#   4. Dokploy 會把該域名路由到 mark6:${PORT}
+#   4. 喺 UI 嘅 Environment Variables 加 FETCH_TOKEN（任意字符串）：
+#      /api/fetch 端點必需佢；未設時端點回 503（停用），抓取按鈕會顯示原因。
+#      ⚠️ 唔好寫入 .env 再 commit（.env 只放非機密嘅 PORT）。
+#   5. Dokploy 會把該域名路由到 mark6:${PORT}
 
 services:
   mark6:
     # 用本目錄嘅 Dockerfile 建 image
     build: .
-    container_name: mark6
+    # ⚠️ 唔寫死 container_name：令同一 compose 可以同時跑多實例（scale/多域名）。
     restart: unless-stopped
 
     # 啟動時先跑 entrypoint：若數據卷內冇歷史主表，就從 image 內附帶
@@ -24,6 +27,8 @@ services:
     # Dokploy 靠 PORT 知道流量要轉發到邊個端口
     environment:
       - PORT=${PORT:-8000}
+      # /api/fetch 端點 token（預設空 = 端點停用回 503；見上面步驟 4）
+      - FETCH_TOKEN=${FETCH_TOKEN:-}
 
     # 數據持久化到 named volume：
     # 抓取按鈕寫入嘅 data/（新 CSV + raw/ 歷史快照）重啟後唔會失。
@@ -31,9 +36,20 @@ services:
     volumes:
       - mark6_data:/app/data
 
-    # 方便除錯（Dokploy 實際用域名路由，未必用得到）
+    # 端口映射：host ${PORT} → container ${PORT}。
+    # ⚠️ 兩邊必須用同一個 PORT：容器內 uvicorn 監聽 $PORT（Dokploy 注入），
+    # 如果右邊寫死 8000，當 PORT=8080 時流量會進到冇監聽嘅端口 → 502。
     ports:
-      - "${PORT:-8000}:8000"
+      - "${PORT:-8000}:${PORT:-8000}"
+
+    # ⚠️ healthcheck：容器「健康」= 真係有 HTTP 服務。
+    # 舊版冇 healthcheck → Dokploy 只看「容器 running」，uvicorn 崩咗都照路由 → 502。
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8000')+'/api/health',timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   mark6_data:

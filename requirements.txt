@@ -1,14 +1,16 @@
-requests>=2.31
-pandas>=2.0
-numpy>=1.24
-scikit-learn>=1.3
-scipy>=1.10
-beautifulsoup4>=4.12
-lxml>=4.9
-openpyxl>=3.1
-
-# Web app
-fastapi>=0.110
-uvicorn>=0.29
-jinja2>=3.0.3,<3.1
-python-multipart>=0.0.9
+# ⚠️ 全部鎖定版本（==）：部署必須可重現。
+# 舊規格全部 >= 下限 → pip 每次解析到「當時最新」，本地與 Docker image 會裝到
+# 唔同組合（本地綠、image 壞）。以下版本係開發/測試環境實測通過嘅組合。
+#
+# Python 版本：3.14（同 Dockerfile base image 一致 → 本地與容器同解釋器，
+# 避免「本地 3.14 綠、容器 3.12 行為唔同」）。
+requests==2.34.2
+pandas==3.0.3
+numpy==2.4.6
+scikit-learn==1.9.0
+scipy==1.17.1
+fastapi==0.136.3
+uvicorn==0.49.0
+# fastapi/starlette 嘅轉依欄，亦鎖定 → 連組合都確定：
+starlette==1.2.1
+httpx==0.28.1
